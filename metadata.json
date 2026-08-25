@@ -1,0 +1,11 @@
+{
+  "name": "Remix Lumosvimos",
+  "description": "Imported from GitHub: alarifkyhastriputra/Lumosvimos",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
