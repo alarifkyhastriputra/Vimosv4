@@ -15,6 +15,7 @@ interface ProfileProps {
   onToggleFollow: (id: string) => void;
   onUpdateProfile: (data: Partial<User>) => void;
   onAddCapture: (url: string) => void;
+  onDeleteCapture?: (captureUrl: string) => void;
   onUserClick: (userId: string) => void;
   onLogout: () => void;
   onBanUser?: (userId: string) => void;
@@ -26,6 +27,7 @@ interface ProfileProps {
   onTakeDownPost?: (id: string) => void;
   onDeletePost?: (id: string) => void;
   onNavigateToChat?: (userId: string) => void;
+  onPostClick?: (postId: string) => void;
 }
 
 const Profile = ({ 
@@ -36,6 +38,7 @@ const Profile = ({
   onToggleFollow, 
   onUpdateProfile, 
   onAddCapture, 
+  onDeleteCapture,
   onUserClick, 
   onLogout,
   onBanUser,
@@ -46,13 +49,15 @@ const Profile = ({
   onComment,
   onTakeDownPost,
   onDeletePost,
-  onNavigateToChat
+  onNavigateToChat,
+  onPostClick
 }: ProfileProps) => {
   const { t, language, setLanguage } = useLanguage();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [modalType, setModalType] = useState<'followers' | 'following' | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [selectedPostId, setSelectedPostId] = useState<string | null>(null);
+  const [selectedCaptureUrl, setSelectedCaptureUrl] = useState<string | null>(null);
   const [editData, setEditData] = useState({ 
     name: user.name || '', 
     bio: user.bio || '' 
@@ -106,8 +111,16 @@ const Profile = ({
     }
   };
 
-  const userPosts = posts.filter(p => p.userId === user.id && (p.photoURL || p.videoURL));
+  const userPosts = posts.filter(p => p.userId === user.id);
   const totalCaptures = userPosts.length + (user.recentCaptures || []).length;
+
+  const handlePostItemClick = (postId: string) => {
+    if (onPostClick) {
+      onPostClick(postId);
+    } else {
+      setSelectedPostId(postId);
+    }
+  };
 
   const equippedFrameItem = SHOP_ITEMS.find(i => i.id === user.equippedFrame);
   const frameClass = equippedFrameItem?.frameClass || '';
@@ -340,32 +353,46 @@ const Profile = ({
         {totalCaptures === 0 ? (
           <div className="py-20 text-center flex flex-col items-center opacity-20">
             <i className={`fas fa-camera text-4xl mb-4 ${isBanned ? 'text-red-600' : ''}`}></i>
-            <p className="italic text-sm uppercase font-bold tracking-widest">No captures found</p>
+            <p className="italic text-sm uppercase font-bold tracking-widest">{t('no_captures') || 'Belum ada postingan visual'}</p>
           </div>
         ) : (
           <div className={`grid grid-cols-3 gap-3 ${isBanned ? 'opacity-30' : ''}`}>
             {userPosts.map((post) => (
               <div 
                 key={post.id} 
-                onClick={() => setSelectedPostId(post.id)}
-                className={`aspect-square bg-gray-50 border rounded-2xl overflow-hidden hover:scale-[1.05] hover:z-10 transition-all cursor-pointer shadow-sm group relative ${isBanned ? 'border-red-200' : 'border-black/5'}`}
+                onClick={() => handlePostItemClick(post.id)}
+                className={`aspect-square bg-gray-50 border rounded-2xl overflow-hidden hover:scale-[1.03] hover:z-10 transition-all cursor-pointer shadow-sm group relative ${isBanned ? 'border-red-200' : 'border-black/5'}`}
               >
                 {post.photoURL ? (
                   <img src={post.photoURL} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-500" alt="Post Capture" />
                 ) : post.videoURL ? (
                   <video src={post.videoURL} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-500" />
-                ) : null}
+                ) : (
+                  <div className="w-full h-full p-2.5 bg-neutral-900 text-white flex flex-col justify-between select-none">
+                    <p className="text-[9px] font-bold line-clamp-3 leading-snug opacity-90">{post.text || 'Orbit Post'}</p>
+                    <div className="flex items-center justify-between text-[8px] opacity-60">
+                      <i className="fas fa-quote-left text-[8px]"></i>
+                      {post.musicURL && <i className="fas fa-music text-[8px]"></i>}
+                    </div>
+                  </div>
+                )}
                 <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity"></div>
                 <div className="absolute top-2 right-2 text-white opacity-0 group-hover:opacity-100 drop-shadow-md">
-                   {post.videoURL ? <i className="fas fa-video"></i> : <i className="fas fa-image"></i>}
+                   {post.videoURL ? <i className="fas fa-video text-xs"></i> : post.photoURL ? <i className="fas fa-image text-xs"></i> : <i className="fas fa-comment-dots text-xs"></i>}
                 </div>
               </div>
             ))}
             {(user.recentCaptures || []).map((url, i) => (
-              <div key={`legacy_${i}`} className={`aspect-square bg-gray-50 border rounded-2xl overflow-hidden hover:scale-[1.05] hover:z-10 transition-all cursor-pointer shadow-sm group relative ${isBanned ? 'border-red-200' : 'border-black/5'}`}>
+              <div 
+                key={`legacy_${i}`} 
+                onClick={() => setSelectedCaptureUrl(url)}
+                className={`aspect-square bg-gray-50 border rounded-2xl overflow-hidden hover:scale-[1.03] hover:z-10 transition-all cursor-pointer shadow-sm group relative ${isBanned ? 'border-red-200' : 'border-black/5'}`}
+              >
                 <img src={url} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-500" alt={`Capture ${i}`} />
                 <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                  <span className="text-white text-xs font-bold px-2 py-1 bg-black/50 rounded-full">Legacy</span>
+                  <span className="text-white text-[10px] font-bold px-2 py-0.5 bg-black/60 backdrop-blur-xs rounded-full">
+                    {t('captures') || 'Capture'}
+                  </span>
                 </div>
               </div>
             ))}
@@ -375,7 +402,7 @@ const Profile = ({
 
       {modalType && (
         <UserListModal 
-          title={modalType === 'followers' ? 'Souls Following' : 'Souls Followed'}
+          title={modalType === 'followers' ? (t('souls_following') || 'Souls Following') : (t('souls_followed') || 'Souls Followed')}
           users={modalType === 'followers' ? followersList : followingList}
           currentUser={currentUser}
           onClose={() => setModalType(null)}
@@ -385,6 +412,36 @@ const Profile = ({
             onUserClick(uid);
           }}
         />
+      )}
+
+      {/* Selected Capture Fullscreen Lightbox */}
+      {selectedCaptureUrl && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-fade-in">
+          <div className="absolute inset-0" onClick={() => setSelectedCaptureUrl(null)}></div>
+          <div className="relative max-w-md w-full bg-neutral-950 rounded-3xl overflow-hidden border border-neutral-800 shadow-2xl p-4 flex flex-col items-center">
+            <button 
+              onClick={() => setSelectedCaptureUrl(null)}
+              className="absolute top-4 right-4 z-50 w-9 h-9 flex items-center justify-center bg-white/20 hover:bg-white text-white hover:text-black rounded-full transition-all"
+            >
+              <i className="fas fa-times text-sm"></i>
+            </button>
+            <div className="w-full aspect-square rounded-2xl overflow-hidden bg-neutral-900 border border-neutral-800 my-2 flex items-center justify-center">
+              <img src={selectedCaptureUrl} alt="Visual Capture" className="w-full h-full object-contain" />
+            </div>
+            {isMe && onDeleteCapture && (
+              <button
+                onClick={() => {
+                  onDeleteCapture(selectedCaptureUrl);
+                  setSelectedCaptureUrl(null);
+                }}
+                className="mt-2 px-4 py-2 bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white text-xs font-bold rounded-xl transition-all flex items-center space-x-1.5"
+              >
+                <i className="fas fa-trash-alt text-[10px]"></i>
+                <span>Hapus Tangkapan</span>
+              </button>
+            )}
+          </div>
+        </div>
       )}
 
       {selectedPostId && (

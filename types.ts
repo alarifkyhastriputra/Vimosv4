@@ -17,6 +17,33 @@ export interface User {
   inventory?: string[]; // Array of purchased item IDs
   equippedFrame?: string; // Equipped avatar frame ID
   equippedBadge?: string; // Equipped badge icon/title
+  lastIp?: string; // Last active IP address
+  registeredIp?: string; // IP address when registered
+  ipHistory?: string[]; // Historic IPs used
+  isIpBanned?: boolean;
+  gpsLat?: number; // Physical GPS Latitude from device
+  gpsLon?: number; // Physical GPS Longitude from device
+  gpsAccuracy?: number; // GPS accuracy in meters
+  gpsAddress?: string; // Full formatted address
+  gpsStreet?: string; // Nama Jalan / Gang / No Rumah
+  gpsVillage?: string; // Dusun / Kelurahan / Desa / RT-RW
+  gpsDistrict?: string; // Kecamatan
+  gpsRegency?: string; // Kabupaten / Kota
+  gpsProvince?: string; // Provinsi
+  gpsPostcode?: string; // Kode Pos
+  gpsUpdatedAt?: number; // Timestamp when GPS was last updated
+  deviceInfo?: string; // Browser / OS info
+}
+
+export interface BannedIpRecord {
+  ip: string;
+  sanitizedIp: string;
+  bannedAt: number;
+  reason?: string;
+  bannedBy?: string;
+  associatedUserId?: string;
+  associatedUserEmail?: string;
+  associatedUserName?: string;
 }
 
 export interface Story {
@@ -136,37 +163,6 @@ export interface Group {
   timestamp?: number;
 }
 
-export interface LiveStream {
-  id: string;
-  hostId: string;
-  hostName: string;
-  hostPhoto: string;
-  title: string;
-  streamType: 'camera' | 'screen';
-  status: 'live' | 'ended';
-  startedAt: number;
-  endedAt?: number;
-  viewerCount?: number;
-  likesCount?: number;
-  viewers?: Record<string, boolean>;
-}
-
-export interface LiveChatMessage {
-  id: string;
-  userId: string;
-  userName: string;
-  userPhoto?: string;
-  text: string;
-  timestamp: number;
-  isHost?: boolean;
-}
-
-export interface LiveReaction {
-  id: string;
-  type: 'heart' | 'fire' | 'clap' | 'star';
-  timestamp: number;
-}
-
 export interface UserShop {
   id: string;
   ownerId: string;
@@ -218,7 +214,6 @@ export const View = {
   CHAT: 'chat',
   PROFILE: 'profile',
   ADMIN: 'admin',
-  LIVESTREAM: 'livestream',
   SHOP: 'shop'
 } as const;
 

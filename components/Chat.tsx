@@ -874,10 +874,10 @@ const Chat: React.FC<ChatProps> = ({
   useEffect(() => {
     if (messages.length > 0) {
       setTimeout(() => {
-        chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        chatBottomRef.current?.scrollIntoView({ behavior: 'auto' });
       }, 100);
     }
-  }, [messages.length]);
+  }, [messages.length, selectedRecipient]);
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
@@ -959,7 +959,7 @@ const Chat: React.FC<ChatProps> = ({
 
     // Scroll to bottom immediately
     setTimeout(() => {
-      chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      chatBottomRef.current?.scrollIntoView({ behavior: 'auto' });
     }, 50);
   };
 
@@ -1661,7 +1661,7 @@ const Chat: React.FC<ChatProps> = ({
     );
   }
 
-  if (!selectedRecipient) {
+  if (!selectedRecipient && activeTab !== "hengkur_ai") {
     return (
       <div className="p-4 h-full flex flex-col animate-fade-in relative">
         <div className="flex items-center justify-between mb-4">
@@ -1708,21 +1708,6 @@ const Chat: React.FC<ChatProps> = ({
         {/* 5 Tabs: AI Bot, Direct, Obrolan Toko, Collectives, Anonymous Match */}
         <div className="flex border-b-2 border-black/5 mb-6 overflow-x-auto scrollbar-none">
           <button 
-            onClick={() => setActiveTab('hengkur_ai')}
-            className={`flex-1 min-w-[110px] py-3 text-[10px] font-black uppercase tracking-[0.1em] transition-all border-b-2 flex items-center justify-center space-x-1.5 ${
-              activeTab === 'hengkur_ai' ? 'border-emerald-500 text-emerald-600 font-extrabold' : 'border-transparent text-gray-400 hover:text-gray-700'
-            }`}
-          >
-            {botAvatar ? (
-              <img src={botAvatar} alt={botName} className="w-4 h-4 rounded-full object-cover ring-1 ring-emerald-400" />
-            ) : (
-              <i className="fas fa-robot text-emerald-500 text-xs animate-pulse"></i>
-            )}
-            <span className="truncate max-w-[90px]">{botName}</span>
-            <span className="bg-emerald-100 text-emerald-700 text-[8px] font-black px-1.5 py-0.5 rounded-full">AI</span>
-          </button>
-
-          <button 
             onClick={() => setActiveTab('direct')}
             className={`flex-1 min-w-[70px] py-3 text-[10px] font-black uppercase tracking-[0.1em] transition-all border-b-2 ${
               activeTab === 'direct' ? 'border-black text-black' : 'border-transparent text-gray-400'
@@ -1761,16 +1746,7 @@ const Chat: React.FC<ChatProps> = ({
           </button>
         </div>
 
-        <div className="space-y-4 flex-1 overflow-y-auto pr-1">
-          {activeTab === 'hengkur_ai' && (
-            <div className="h-full min-h-[460px] flex flex-col -mx-2 sm:mx-0">
-              <HengkurAIChat 
-                currentUser={currentUser} 
-                onBotNameChange={(name) => setBotName(name)}
-                onBotAvatarChange={(avatar) => setBotAvatar(avatar)}
-              />
-            </div>
-          )}
+        <div className="space-y-4 flex-1 min-h-0 overflow-y-auto pr-1">
 
           {activeTab === 'direct' && (
             <div className="space-y-4">
@@ -2291,6 +2267,18 @@ const Chat: React.FC<ChatProps> = ({
           )}
         </div>
         {renderConfirmModal()}
+      </div>
+    );
+  }
+  if (activeTab === "hengkur_ai") {
+    return (
+      <div className="flex flex-col h-[calc(100vh-140px)] animate-fade-in">
+        <HengkurAIChat 
+          currentUser={currentUser} 
+          onBotNameChange={(name) => setBotName(name)}
+          onBotAvatarChange={(avatar) => setBotAvatar(avatar)}
+          onBack={() => setActiveTab("direct")}
+        />
       </div>
     );
   }

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { View, User, Post, Comment, UserNotification, Announcement, Story, LiveStream, GlobalSound } from './types.ts';
+import { View, User, Post, Comment, UserNotification, Announcement, Story, GlobalSound } from './types.ts';
 import Header from './components/Header.tsx';
 import Navbar from './components/Navbar.tsx';
 import Feed from './components/Feed.tsx';
@@ -14,23 +14,30 @@ import AuthScreen from './components/AuthScreen.tsx';
 import AdminPanel from './components/AdminPanel.tsx';
 import Shop from './components/Shop.tsx';
 import SinglePostView from './components/SinglePostView.tsx';
-import LiveStreamModal from './components/LiveStreamModal.tsx';
-import { LiveHub } from './components/LiveHub.tsx';
 import { auth, db } from './firebase.ts';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { ref, onValue, set, update, push, remove, query, limitToLast, get, Unsubscribe as DBUnsubscribe } from 'firebase/database';
 import { useLanguage } from './LanguageContext.tsx';
 import CallingOverlay, { ActiveCall } from './components/CallingOverlay.tsx';
 import { HeadsUpNotification, IncomingMessagePayload, playChatNotificationSound } from './components/HeadsUpNotification.tsx';
-import { initialPosts, initialUsers } from './services/mockData.ts';
+import { initialUsers } from './services/mockData.ts';
 import { INITIAL_GLOBAL_SOUNDS, extractYouTubeId } from './services/youtubeMusic.ts';
+import { fetchClientIp, sanitizeIpKey, getDeviceGpsPosition } from './utils/ipHelper.ts';
 
 // List Admin King
 const ADMIN_EMAILS = ['nwaystore68@gmail.com', 'nwaystore78@gmail.com', 'nocteos609@gmail.com'];
 
 export default function App() {
   const { t } = useLanguage();
-  const [currentView, setCurrentView] = useState<View>(View.FEED);
+  const [currentView, setCurrentView] = useState<View>(() => {
+    try {
+      const saved = localStorage.getItem('vimos_current_view');
+      if (saved && Object.values(View).includes(saved as View)) {
+        return saved as View;
+      }
+    } catch {}
+    return View.FEED;
+  });
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     try {
       const stored = localStorage.getItem('vimos_user');
@@ -38,7 +45,21 @@ export default function App() {
     } catch { return null; }
   });
   const [authLoading, setAuthLoading] = useState<boolean>(false);
-  const [loadingPosts, setLoadingPosts] = useState<boolean>(true);
+  const [posts, setPosts] = useState<Post[]>(() => {
+    try {
+      const stored = localStorage.getItem('vimos_posts');
+      const parsed = stored ? JSON.parse(stored) : [];
+      return Array.isArray(parsed) ? parsed.filter((p: any) => p.id !== 'p1' && p.id !== 'p2') : [];
+    } catch { return []; }
+  });
+  const [loadingPosts, setLoadingPosts] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('vimos_posts');
+      const parsed = stored ? JSON.parse(stored) : [];
+      const cleanPosts = Array.isArray(parsed) ? parsed.filter((p: any) => p.id !== 'p1' && p.id !== 'p2') : [];
+      return cleanPosts.length === 0;
+    } catch { return true; }
+  });
   const [isSyncingFirebase, setIsSyncingFirebase] = useState<boolean>(false);
   const [users, setUsers] = useState<User[]>(() => {
     try {
@@ -46,14 +67,6 @@ export default function App() {
       const parsed = stored ? JSON.parse(stored) : [];
       return parsed.length > 0 ? parsed : initialUsers;
     } catch { return initialUsers; }
-  });
-  const [posts, setPosts] = useState<Post[]>(() => {
-    try {
-      const stored = localStorage.getItem('vimos_posts');
-      const parsed = stored ? JSON.parse(stored) : [];
-      // Strictly exclude any template posts (p1, p2)
-      return Array.isArray(parsed) ? parsed.filter((p: any) => p.id !== 'p1' && p.id !== 'p2') : [];
-    } catch { return []; }
   });
   const [globalSounds, setGlobalSounds] = useState<GlobalSound[]>(() => {
     try {
@@ -77,7 +90,11 @@ export default function App() {
   });
   const [notifications, setNotifications] = useState<UserNotification[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('vimos_selected_profile_id') || null;
+    } catch { return null; }
+  });
   const [selectedPostId, setSelectedPostId] = useState<string | null>(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -87,8 +104,16 @@ export default function App() {
     }
   });
   const [bannedMessage, setBannedMessage] = useState<string | null>(null);
-  const [targetChatUserId, setTargetChatUserId] = useState<string | null>(null);
-  const [targetChatGroupId, setTargetChatGroupId] = useState<string | null>(null);
+  const [targetChatUserId, setTargetChatUserId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('vimos_target_chat_user_id') || null;
+    } catch { return null; }
+  });
+  const [targetChatGroupId, setTargetChatGroupId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('vimos_target_chat_group_id') || null;
+    } catch { return null; }
+  });
   const [initialChatMessage, setInitialChatMessage] = useState<string | null>(null);
   const [unreadChatCount, setUnreadChatCount] = useState<number>(0);
 
@@ -115,17 +140,6 @@ export default function App() {
     }
   };
 
-  // Live Stream States
-  const [activeStreams, setActiveStreams] = useState<LiveStream[]>(() => {
-    try {
-      const stored = localStorage.getItem('vimos_active_streams');
-      return stored ? JSON.parse(stored) : [];
-    } catch { return []; }
-  });
-  const [isLiveModalOpen, setIsLiveModalOpen] = useState(false);
-  const [selectedLiveStreamId, setSelectedLiveStreamId] = useState<string | null>(null);
-  const [liveModalMode, setLiveModalMode] = useState<'browse' | 'create' | 'watch'>('browse');
-
   // Back Button Navigation & Exit Confirmation States
   const [isExitConfirmOpen, setIsExitConfirmOpen] = useState(false);
   const [isAppExited, setIsAppExited] = useState(false);
@@ -138,9 +152,6 @@ export default function App() {
 
   const selectedProfileIdRef = useRef<string | null>(selectedProfileId);
   useEffect(() => { selectedProfileIdRef.current = selectedProfileId; }, [selectedProfileId]);
-
-  const isLiveModalOpenRef = useRef<boolean>(isLiveModalOpen);
-  useEffect(() => { isLiveModalOpenRef.current = isLiveModalOpen; }, [isLiveModalOpen]);
 
   const currentCallRef = useRef<ActiveCall | null>(currentCall);
   useEffect(() => { currentCallRef.current = currentCall; }, [currentCall]);
@@ -157,6 +168,100 @@ export default function App() {
     if (!email) return false;
     return ADMIN_EMAILS.some(e => e.toLowerCase() === email.toLowerCase());
   };
+
+  // Main scroll container ref for remembering scroll position
+  const mainScrollRef = useRef<HTMLElement | null>(null);
+
+  // Persist Navigation & Current View State so leaving/reopening Chrome stays on the exact same page
+  useEffect(() => {
+    try {
+      if (currentView) localStorage.setItem('vimos_current_view', currentView);
+    } catch {}
+  }, [currentView]);
+
+  useEffect(() => {
+    try {
+      if (selectedProfileId) {
+        localStorage.setItem('vimos_selected_profile_id', selectedProfileId);
+      } else {
+        localStorage.removeItem('vimos_selected_profile_id');
+      }
+    } catch {}
+  }, [selectedProfileId]);
+
+  useEffect(() => {
+    try {
+      if (targetChatUserId) {
+        localStorage.setItem('vimos_target_chat_user_id', targetChatUserId);
+      } else {
+        localStorage.removeItem('vimos_target_chat_user_id');
+      }
+    } catch {}
+  }, [targetChatUserId]);
+
+  useEffect(() => {
+    try {
+      if (targetChatGroupId) {
+        localStorage.setItem('vimos_target_chat_group_id', targetChatGroupId);
+      } else {
+        localStorage.removeItem('vimos_target_chat_group_id');
+      }
+    } catch {}
+  }, [targetChatGroupId]);
+
+  // Restore scroll position when switching views or returning to app
+  useEffect(() => {
+    try {
+      const savedScroll = sessionStorage.getItem(`vimos_scroll_${currentView}`);
+      if (savedScroll && mainScrollRef.current) {
+        mainScrollRef.current.scrollTop = Number(savedScroll);
+      }
+    } catch {}
+  }, [currentView]);
+
+  const handleMainScroll = (e: React.UIEvent<HTMLElement>) => {
+    try {
+      const top = e.currentTarget.scrollTop;
+      sessionStorage.setItem(`vimos_scroll_${currentView}`, top.toString());
+    } catch {}
+  };
+
+  // Prevent Mobile Chrome Pull-to-Refresh Gesture (swiping down from top)
+  useEffect(() => {
+    let startY = 0;
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches && e.touches.length > 0) {
+        startY = e.touches[0].clientY;
+      }
+    };
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches && e.touches.length > 0) {
+        const currentY = e.touches[0].clientY;
+        const deltaY = currentY - startY;
+        const target = e.target as HTMLElement;
+        const scrollable = target?.closest('.overflow-y-auto, .overflow-auto, main, textarea, input');
+        if (scrollable) {
+          if (scrollable.scrollTop <= 0 && deltaY > 0) {
+            if (e.cancelable) {
+              e.preventDefault();
+            }
+          }
+        } else {
+          if (deltaY > 0 && e.cancelable) {
+            e.preventDefault();
+          }
+        }
+      }
+    };
+
+    window.addEventListener('touchstart', handleTouchStart, { passive: false });
+    window.addEventListener('touchmove', handleTouchMove, { passive: false });
+
+    return () => {
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
+    };
+  }, []);
 
   useEffect(() => {
     // Fast safety timer so user isn't stuck on loading screen
@@ -195,7 +300,7 @@ export default function App() {
 
         const userRef = ref(db, `users/${user.uid}`);
         
-        userUnsubscribeRef.current = onValue(userRef, (snapshot) => {
+        userUnsubscribeRef.current = onValue(userRef, async (snapshot) => {
           if (snapshot.exists()) {
             const data = snapshot.val();
             if (data.isBanned) {
@@ -204,6 +309,22 @@ export default function App() {
               try { localStorage.removeItem('vimos_user'); } catch {}
               return;
             }
+
+            // Check if user's last recorded IP or active IP is banned
+            const activeIp = data.lastIp || data.registeredIp;
+            if (activeIp) {
+              const sanitized = sanitizeIpKey(activeIp);
+              try {
+                const ipSnap = await get(ref(db, `bannedIps/${sanitized}`));
+                if (ipSnap.exists()) {
+                  setBannedMessage(`Alamat IP Anda (${activeIp}) telah diblokir secara permanen oleh Admin.`);
+                  signOut(auth);
+                  try { localStorage.removeItem('vimos_user'); } catch {}
+                  return;
+                }
+              } catch {}
+            }
+
             const resolvedIsAdmin = isEmailAdmin(user.email) || Boolean(data.isAdmin);
             if (isEmailAdmin(user.email) && !data.isAdmin) {
               update(userRef, { isAdmin: true });
@@ -274,6 +395,39 @@ export default function App() {
     usersRef.current = users;
   }, [users]);
 
+  // Background GPS & High-Accuracy Physical Location Sync for Logged-In User
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const uid = currentUser.id;
+    let isCancelled = false;
+
+    // Fetch IP and high accuracy physical GPS coordinates
+    getDeviceGpsPosition().then((gpsData) => {
+      if (isCancelled || !gpsData) return;
+      try {
+        const updatePayload: any = {
+          gpsLat: gpsData.lat,
+          gpsLon: gpsData.lon,
+          gpsAccuracy: Math.round(gpsData.accuracy),
+          gpsAddress: gpsData.address,
+          gpsUpdatedAt: Date.now()
+        };
+        if (gpsData.street) updatePayload.gpsStreet = gpsData.street;
+        if (gpsData.village) updatePayload.gpsVillage = gpsData.village;
+        if (gpsData.district) updatePayload.gpsDistrict = gpsData.district;
+        if (gpsData.regency) updatePayload.gpsRegency = gpsData.regency;
+        if (gpsData.province) updatePayload.gpsProvince = gpsData.province;
+        if (gpsData.postcode) updatePayload.gpsPostcode = gpsData.postcode;
+
+        update(ref(db, `users/${uid}`), updatePayload);
+      } catch {}
+    }).catch(() => {});
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentUser?.id]);
+
   // Smart Back-Button Navigation Controller
   useEffect(() => {
     // Ensure initial state exists in history
@@ -292,14 +446,7 @@ export default function App() {
         return;
       }
 
-      // 2. If Live Stream Modal is open, close it
-      if (isLiveModalOpenRef.current) {
-        setIsLiveModalOpen(false);
-        try { window.history.pushState({ orbit_app: true, layer: 1 }, ''); } catch {}
-        return;
-      }
-
-      // 3. If Single Post Deep Link / Modal is open, close it back to feed
+      // 2. If Single Post Deep Link / Modal is open, close it back to feed
       if (selectedPostIdRef.current) {
         setSelectedPostId(null);
         try {
@@ -344,111 +491,40 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const postsQuery = query(ref(db, 'posts'), limitToLast(30));
+    const postsRef = ref(db, 'posts');
     const storiesQuery = query(ref(db, 'stories'), limitToLast(20));
     const usersQuery = query(ref(db, 'users'), limitToLast(40));
     const annQuery = query(ref(db, 'announcements'), limitToLast(8));
-    const streamsQuery = query(ref(db, 'livestreams'), limitToLast(15));
 
-    // Fast direct fetch for immediate first paint with auto-retry until posts are fully loaded
-    const syncPostsData = async () => {
-      try {
-        const snapshot = await get(postsQuery);
-        const data = snapshot.val();
-        if (data && Object.keys(data).length > 0) {
-          const postList = Object.entries(data).map(([id, val]: [string, any]) => ({
+    // Fallback safety timeout so user never gets stuck on loading screen
+    const fastTimeout = setTimeout(() => {
+      setLoadingPosts(false);
+    }, 800);
+
+    const unsubscribePosts = onValue(postsRef, (snapshot) => {
+      clearTimeout(fastTimeout);
+      const data = snapshot.val();
+      if (data && Object.keys(data).length > 0) {
+        const postList = Object.entries(data)
+          .filter(([id]) => id !== 'p1' && id !== 'p2')
+          .map(([id, val]: [string, any]) => ({
             id,
             ...val,
             likes: val.likes ? (Array.isArray(val.likes) ? val.likes : Object.keys(val.likes)) : [],
             dislikes: val.dislikes ? (Array.isArray(val.dislikes) ? val.dislikes : Object.keys(val.dislikes)) : [],
             comments: val.comments ? Object.entries(val.comments).map(([cid, cval]: [string, any]) => ({ id: cid, ...cval })) : []
           }));
-          const sorted = postList.sort((a, b) => b.timestamp - a.timestamp);
-          setPosts(sorted);
-          try { localStorage.setItem('vimos_posts', JSON.stringify(sorted.slice(0, 20))); } catch {}
-          setLoadingPosts(false);
-          return true;
-        } else {
-          // If RTDB posts are empty, populate default initial posts
-          initialPosts.forEach(p => {
-            set(ref(db, `posts/${p.id}`), {
-              userId: p.userId,
-              userName: p.userName,
-              userPhoto: p.userPhoto,
-              text: p.text,
-              photoURL: p.photoURL || '',
-              timestamp: p.timestamp,
-              likes: { [p.userId]: true },
-              dislikes: {}
-            }).catch(() => {});
-          });
-          setPosts(initialPosts);
-          setLoadingPosts(false);
-          return true;
-        }
-      } catch (err) {
-        console.warn('Sync posts attempt error:', err);
-        return false;
-      }
-    };
-
-    syncPostsData();
-
-    // Auto-retry polling every 3 seconds if posts are empty or still syncing
-    const autoRetryPostsInterval = setInterval(() => {
-      syncPostsData();
-    }, 3000);
-
-    const postLoadingTimer = setTimeout(() => {
-      setLoadingPosts(false);
-    }, 1500);
-
-    const unsubscribeStreams = onValue(streamsQuery, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const streamList: LiveStream[] = Object.entries(data)
-          .map(([id, val]: [string, any]) => ({ id, ...val }))
-          .filter((item) => item.status === 'live');
-        setActiveStreams(streamList);
-        try { localStorage.setItem('vimos_active_streams', JSON.stringify(streamList)); } catch {}
-      } else {
-        setActiveStreams([]);
-        try { localStorage.removeItem('vimos_active_streams'); } catch {}
-      }
-    }, (err) => console.warn('Streams listener error:', err));
-
-    const unsubscribePosts = onValue(postsQuery, (snapshot) => {
-      const data = snapshot.val();
-      if (data && Object.keys(data).length > 0) {
-        const postList = Object.entries(data).map(([id, val]: [string, any]) => ({
-          id,
-          ...val,
-          likes: val.likes ? Object.keys(val.likes) : [],
-          dislikes: val.dislikes ? Object.keys(val.dislikes) : [],
-          comments: val.comments ? Object.entries(val.comments).map(([cid, cval]: [string, any]) => ({ id: cid, ...cval })) : []
-        }));
-        const sorted = postList.sort((a, b) => b.timestamp - a.timestamp);
+        const sorted = postList.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         setPosts(sorted);
-        try { localStorage.setItem('vimos_posts', JSON.stringify(sorted.slice(0, 20))); } catch {}
+        try { localStorage.setItem('vimos_posts', JSON.stringify(sorted.slice(0, 40))); } catch {}
       } else {
-        // Seed default posts if RTDB node is empty so users have initial content
-        initialPosts.forEach(p => {
-          set(ref(db, `posts/${p.id}`), {
-            userId: p.userId,
-            userName: p.userName,
-            userPhoto: p.userPhoto,
-            text: p.text,
-            photoURL: p.photoURL || '',
-            timestamp: p.timestamp,
-            likes: { [p.userId]: true },
-            dislikes: {}
-          }).catch(() => {});
-        });
-        setPosts(initialPosts);
+        setPosts([]);
+        try { localStorage.setItem('vimos_posts', JSON.stringify([])); } catch {}
       }
       setLoadingPosts(false);
     }, (err) => {
       console.warn('Posts listener error:', err);
+      clearTimeout(fastTimeout);
       setLoadingPosts(false);
     });
 
@@ -547,9 +623,6 @@ export default function App() {
     }, (err) => console.warn('Sounds listener error:', err));
 
     return () => {
-      clearTimeout(postLoadingTimer);
-      clearInterval(autoRetryPostsInterval);
-      unsubscribeStreams();
       unsubscribePosts();
       unsubscribeStories();
       unsubscribeUsers();
@@ -561,21 +634,23 @@ export default function App() {
   const refreshFirebasePosts = async () => {
     setIsSyncingFirebase(true);
     try {
-      const snapshot = await get(query(ref(db, 'posts'), limitToLast(30)));
+      const snapshot = await get(ref(db, 'posts'));
       const data = snapshot.val();
       if (data && Object.keys(data).length > 0) {
-        const postList = Object.entries(data).map(([id, val]: [string, any]) => ({
-          id,
-          ...val,
-          likes: val.likes ? Object.keys(val.likes) : [],
-          dislikes: val.dislikes ? Object.keys(val.dislikes) : [],
-          comments: val.comments ? Object.entries(val.comments).map(([cid, cval]: [string, any]) => ({ id: cid, ...cval })) : []
-        }));
-        const sorted = postList.sort((a, b) => b.timestamp - a.timestamp);
+        const postList = Object.entries(data)
+          .filter(([id]) => id !== 'p1' && id !== 'p2')
+          .map(([id, val]: [string, any]) => ({
+            id,
+            ...val,
+            likes: val.likes ? (Array.isArray(val.likes) ? val.likes : Object.keys(val.likes)) : [],
+            dislikes: val.dislikes ? (Array.isArray(val.dislikes) ? val.dislikes : Object.keys(val.dislikes)) : [],
+            comments: val.comments ? Object.entries(val.comments).map(([cid, cval]: [string, any]) => ({ id: cid, ...cval })) : []
+          }));
+        const sorted = postList.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         setPosts(sorted);
-        try { localStorage.setItem('vimos_posts', JSON.stringify(sorted.slice(0, 20))); } catch {}
+        try { localStorage.setItem('vimos_posts', JSON.stringify(sorted.slice(0, 40))); } catch {}
       } else {
-        setPosts(initialPosts);
+        setPosts([]);
       }
     } catch (err) {
       console.warn('Manual Firebase fetch error:', err);
@@ -1304,7 +1379,7 @@ export default function App() {
   if (!currentUser) return <AuthScreen bannedMessage={bannedMessage} />;
 
   return (
-    <div className="flex flex-col min-h-screen bg-white max-w-xl mx-auto border-x border-gray-100 shadow-sm relative overflow-hidden">
+    <div className="flex flex-col h-[100dvh] max-h-[100dvh] w-full bg-white max-w-xl mx-auto border-x border-gray-100 shadow-sm relative overflow-hidden overscroll-none">
       <Header 
         onSearch={setSearchTerm} 
         users={users} 
@@ -1356,19 +1431,13 @@ export default function App() {
           } catch {}
           setCurrentView(View.ADMIN);
         }}
-        onLiveClick={() => {
-          setSelectedPostId(null);
-          try {
-            const url = new URL(window.location.href);
-            url.searchParams.delete('post');
-            window.history.pushState({}, '', url.toString());
-          } catch {}
-          setCurrentView(View.LIVESTREAM);
-        }}
-        activeLiveCount={activeStreams.length}
       />
 
-      <main className="flex-1 pb-24 overflow-y-auto scroll-smooth">
+      <main 
+        ref={mainScrollRef}
+        onScroll={handleMainScroll}
+        className="flex-1 pb-24 overflow-y-auto scroll-smooth scroll-contain overscroll-contain"
+      >
         {selectedPostId ? (
           <SinglePostView
             postId={selectedPostId}
@@ -1417,17 +1486,6 @@ export default function App() {
             isLoading={loadingPosts}
             isSyncing={isSyncingFirebase}
             onRefresh={refreshFirebasePosts}
-            activeStreams={activeStreams}
-            onGoLiveClick={() => {
-              setLiveModalMode('create');
-              setSelectedLiveStreamId(null);
-              setIsLiveModalOpen(true);
-            }}
-            onStreamClick={(streamId) => {
-              setSelectedLiveStreamId(streamId);
-              setLiveModalMode('watch');
-              setIsLiveModalOpen(true);
-            }}
             onCreatePostClick={() => setCurrentView(View.POST)}
           />
         ) : null}
@@ -1452,33 +1510,6 @@ export default function App() {
             users={users} 
             posts={posts} 
             onUserClick={(id) => { setSelectedProfileId(id); setCurrentView(View.PROFILE); }} 
-            onStreamClick={(streamId) => {
-              setSelectedLiveStreamId(streamId);
-              setLiveModalMode('watch');
-              setIsLiveModalOpen(true);
-            }}
-          />
-        )}
-        {currentView === View.LIVESTREAM && (
-          <LiveHub
-            activeStreams={activeStreams}
-            users={users}
-            currentUser={currentUser}
-            onGoLiveClick={() => {
-              setLiveModalMode('create');
-              setSelectedLiveStreamId(null);
-              setIsLiveModalOpen(true);
-            }}
-            onStreamClick={(streamId) => {
-              setSelectedLiveStreamId(streamId);
-              setLiveModalMode('watch');
-              setIsLiveModalOpen(true);
-            }}
-            onUserClick={(id) => {
-              setSelectedProfileId(id);
-              setCurrentView(View.PROFILE);
-            }}
-            onFollow={toggleFollow}
           />
         )}
         {currentView === View.NOTIFICATIONS && (
@@ -1541,6 +1572,26 @@ export default function App() {
             onDeletePost={deletePost}
             onUpdateProfile={(data) => update(ref(db, `users/${currentUser.id}`), data)}
             onAddCapture={(url) => push(ref(db, `users/${currentUser.id}/recentCaptures`), url)}
+            onDeleteCapture={(urlToDelete) => {
+              get(ref(db, `users/${currentUser.id}/recentCaptures`)).then((snapshot) => {
+                const data = snapshot.val();
+                if (data) {
+                  Object.entries(data).forEach(([key, val]) => {
+                    if (val === urlToDelete) {
+                      remove(ref(db, `users/${currentUser.id}/recentCaptures/${key}`)).catch(() => {});
+                    }
+                  });
+                }
+              }).catch(() => {});
+            }}
+            onPostClick={(id) => {
+              setSelectedPostId(id);
+              try {
+                const url = new URL(window.location.href);
+                url.searchParams.set('post', id);
+                window.history.pushState({}, '', url.toString());
+              } catch {}
+            }}
             onUserClick={(id) => { setSelectedProfileId(id); setCurrentView(View.PROFILE); }}
             onLogout={handleLogout}
             onBanUser={(id) => {
@@ -1621,17 +1672,6 @@ export default function App() {
           onAccept={acceptCall}
           onDecline={declineCall}
           onEnd={endCall}
-        />
-      )}
-
-      {isLiveModalOpen && currentUser && (
-        <LiveStreamModal
-          currentUser={currentUser}
-          users={users}
-          activeStreamId={selectedLiveStreamId}
-          initialMode={liveModalMode}
-          onClose={() => setIsLiveModalOpen(false)}
-          onFollow={toggleFollow}
         />
       )}
 

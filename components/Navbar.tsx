@@ -15,7 +15,6 @@ const Navbar: React.FC<NavbarProps> = ({ activeView, onViewChange, unreadCount =
 
   const primaryTabs = [
     { id: View.FEED, icon: 'fa-house', label: t('home') },
-    { id: View.LIVESTREAM, icon: 'fa-tower-broadcast', label: 'Live', isLive: true },
     { id: View.REELS, icon: 'fa-film', label: t('reels') },
     { id: View.SHOP, icon: 'fa-bag-shopping', label: t('shop') },
     { id: View.POST, icon: 'fa-plus', label: t('create'), isAction: true },
@@ -63,8 +62,8 @@ const Navbar: React.FC<NavbarProps> = ({ activeView, onViewChange, unreadCount =
               <div className="relative flex items-center justify-center">
                 <i className={`fas ${tab.icon} text-base transition-colors duration-150 ${
                   isActive 
-                    ? tab.isLive ? 'text-red-600 font-black' : 'text-black font-black' 
-                    : tab.isLive ? 'text-red-500/80 hover:text-red-600' : 'text-neutral-400 group-hover:text-neutral-700'
+                    ? 'text-black font-black' 
+                    : 'text-neutral-400 group-hover:text-neutral-700'
                 }`}></i>
 
                 {/* Badge unread count */}
@@ -73,27 +72,19 @@ const Navbar: React.FC<NavbarProps> = ({ activeView, onViewChange, unreadCount =
                     {tab.count > 9 ? '9+' : tab.count}
                   </span>
                 )}
-
-                {/* Live indicator pulsing beacon */}
-                {tab.isLive && (
-                  <span className="absolute -top-1 -right-1.5 flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-red-600"></span>
-                  </span>
-                )}
               </div>
 
               <span className={`text-[8.5px] font-bold tracking-tighter mt-1 transition-colors leading-none whitespace-nowrap overflow-hidden text-ellipsis ${
                 isActive 
-                  ? tab.isLive ? 'text-red-600 font-black' : 'text-black font-black'
-                  : tab.isLive ? 'text-red-500' : 'text-neutral-400 group-hover:text-neutral-600'
+                  ? 'text-black font-black'
+                  : 'text-neutral-400 group-hover:text-neutral-600'
               }`}>
                 {tab.label}
               </span>
 
               {/* Active Indicator Bar */}
               {isActive && (
-                <div className={`h-0.5 w-3 rounded-full mt-1 ${tab.isLive ? 'bg-red-600' : 'bg-black'}`} />
+                <div className="h-0.5 w-3 rounded-full mt-1 bg-black" />
               )}
             </button>
           );

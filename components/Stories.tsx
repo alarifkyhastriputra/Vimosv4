@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Story, User, LiveStream } from '../types.ts';
+import { Story, User } from '../types.ts';
 import { useLanguage } from '../LanguageContext.tsx';
 
 interface StoriesProps {
@@ -8,9 +8,6 @@ interface StoriesProps {
   onAddStory: (text: string, photoURL?: string, videoURL?: string, mediaType?: 'image' | 'video') => void;
   onDeleteStory?: (storyId: string) => void;
   users: User[];
-  activeStreams?: LiveStream[];
-  onStreamClick?: (streamId: string) => void;
-  onGoLiveClick?: () => void;
 }
 
 const getRemainingTimeFormatted = (createdAt: number) => {
@@ -31,10 +28,7 @@ const Stories: React.FC<StoriesProps> = ({
   currentUser, 
   onAddStory, 
   onDeleteStory,
-  users,
-  activeStreams = [],
-  onStreamClick,
-  onGoLiveClick
+  users
 }) => {
   const { t } = useLanguage();
   const [isAdding, setIsAdding] = useState(false);
@@ -208,30 +202,6 @@ const Stories: React.FC<StoriesProps> = ({
             )}
           </div>
         </div>
-
-        {/* Active Live Streams Circles */}
-        {activeStreams.map((stream) => (
-          <div 
-            key={`live-${stream.id}`} 
-            className="flex flex-col items-center space-y-1.5 flex-shrink-0 cursor-pointer animate-fade-in"
-            onClick={() => onStreamClick && onStreamClick(stream.id)}
-          >
-            <div className="relative">
-              <div className="absolute -inset-1 rounded-full bg-gradient-to-tr from-red-600 via-rose-500 to-amber-500 animate-spin"></div>
-              <div className="w-14 h-14 rounded-full p-[2px] bg-white relative z-10">
-                <img 
-                  src={stream.hostPhoto || `https://api.dicebear.com/7.x/initials/svg?seed=${stream.hostName}`} 
-                  alt={stream.hostName} 
-                  className="w-full h-full rounded-full object-cover" 
-                />
-              </div>
-              <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 bg-red-600 text-white text-[8px] font-black uppercase px-1.5 py-0.2 rounded-full border border-white z-20 shadow-lg">
-                LIVE
-              </span>
-            </div>
-            <span className="text-[11px] font-bold text-red-600 truncate w-16 text-center">{stream.hostName.split(' ')[0]}</span>
-          </div>
-        ))}
 
         {/* Story List (Followers & Following only) */}
         {stories

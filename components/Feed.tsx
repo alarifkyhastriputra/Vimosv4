@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Post, User, Announcement, Story, LiveStream } from '../types.ts';
+import { Post, User, Announcement, Story } from '../types.ts';
 import PostCard from './PostCard.tsx';
 import Stories from './Stories.tsx';
 import { useLanguage } from '../LanguageContext.tsx';
@@ -23,9 +23,6 @@ interface FeedProps {
   isLoading?: boolean;
   isSyncing?: boolean;
   onRefresh?: () => void;
-  activeStreams?: LiveStream[];
-  onStreamClick?: (streamId: string) => void;
-  onGoLiveClick?: () => void;
   onCreatePostClick?: () => void;
 }
 
@@ -105,9 +102,6 @@ const Feed: React.FC<FeedProps> = ({
   isLoading = false,
   isSyncing = false,
   onRefresh,
-  activeStreams = [],
-  onStreamClick,
-  onGoLiveClick,
   onCreatePostClick
 }) => {
   const { t } = useLanguage();
@@ -122,9 +116,6 @@ const Feed: React.FC<FeedProps> = ({
           onAddStory={onAddStory} 
           onDeleteStory={onDeleteStory}
           users={users}
-          activeStreams={activeStreams}
-          onStreamClick={onStreamClick}
-          onGoLiveClick={onGoLiveClick}
         />
       )}
 
@@ -163,34 +154,15 @@ const Feed: React.FC<FeedProps> = ({
         </div>
       )}
 
-      {(isLoading || isSyncing) && posts.length === 0 ? (
+      {posts.length === 0 ? (
         <div className="space-y-4">
           <SpinningFeedLoader 
-            message="Memuat Postingan Web..." 
-            subMessage="Menyinkronkan postingan terbaru Orbit" 
+            message="Memuat Postingan..." 
+            subMessage="Menghubungkan dan menyinkronkan feed terbaru" 
           />
           <PostCardSkeleton />
           <PostCardSkeleton />
-        </div>
-      ) : posts.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-12 px-6 text-center bg-white border border-black/5 rounded-3xl shadow-sm animate-fade-in">
-          <div className="w-14 h-14 rounded-full bg-neutral-100 border border-neutral-200 flex items-center justify-center mb-3 shadow-xs">
-            <i className="fas fa-ghost text-2xl text-neutral-400"></i>
-          </div>
-          <p className="font-bold text-sm text-neutral-800 mb-1">{t('nothing_here')}</p>
-          <p className="text-xs text-neutral-400 mb-5 max-w-xs leading-relaxed">Jadilah yang pertama membagikan foto, video atau cerita ke Orbit!</p>
-          
-          <div className="flex flex-wrap items-center justify-center gap-3">
-            {onCreatePostClick && (
-              <button 
-                onClick={onCreatePostClick}
-                className="bg-black text-white text-xs font-bold px-5 py-2.5 rounded-full hover:bg-neutral-800 transition-all shadow-xs flex items-center space-x-1.5 active:scale-95"
-              >
-                <i className="fas fa-plus text-[10px]"></i>
-                <span>{t('create_post')}</span>
-              </button>
-            )}
-          </div>
+          <PostCardSkeleton />
         </div>
       ) : (
         posts.map((post) => (

@@ -3,7 +3,8 @@
   "description": "Imported from GitHub: alarifkyhastriputra/Lumosvimos",
   "requestFramePermissions": [
     "camera",
-    "microphone"
+    "microphone",
+    "geolocation"
   ],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

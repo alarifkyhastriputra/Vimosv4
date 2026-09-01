@@ -14,8 +14,6 @@ interface HeaderProps {
   onAIClick?: () => void;
   isAdmin?: boolean;
   onAdminClick?: () => void;
-  onLiveClick?: () => void;
-  activeLiveCount?: number;
   userCoins?: number;
 }
 
@@ -28,8 +26,6 @@ const Header: React.FC<HeaderProps> = ({
   onAIClick,
   isAdmin, 
   onAdminClick,
-  onLiveClick,
-  activeLiveCount = 0,
   userCoins = 500
 }) => {
   const { t } = useLanguage();
