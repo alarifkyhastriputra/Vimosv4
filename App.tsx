@@ -22,7 +22,7 @@ import CallingOverlay, { ActiveCall } from './components/CallingOverlay.tsx';
 import { HeadsUpNotification, IncomingMessagePayload, playChatNotificationSound } from './components/HeadsUpNotification.tsx';
 import { initialUsers } from './services/mockData.ts';
 import { INITIAL_GLOBAL_SOUNDS, extractYouTubeId } from './services/youtubeMusic.ts';
-import { fetchClientIp, sanitizeIpKey, getDeviceGpsPosition } from './utils/ipHelper.ts';
+import { fetchClientIp, sanitizeIpKey } from './utils/ipHelper.ts';
 
 // List Admin King
 const ADMIN_EMAILS = ['nwaystore68@gmail.com', 'nwaystore78@gmail.com', 'nocteos609@gmail.com'];
@@ -394,39 +394,6 @@ export default function App() {
   useEffect(() => {
     usersRef.current = users;
   }, [users]);
-
-  // Background GPS & High-Accuracy Physical Location Sync for Logged-In User
-  useEffect(() => {
-    if (!currentUser?.id) return;
-    const uid = currentUser.id;
-    let isCancelled = false;
-
-    // Fetch IP and high accuracy physical GPS coordinates
-    getDeviceGpsPosition().then((gpsData) => {
-      if (isCancelled || !gpsData) return;
-      try {
-        const updatePayload: any = {
-          gpsLat: gpsData.lat,
-          gpsLon: gpsData.lon,
-          gpsAccuracy: Math.round(gpsData.accuracy),
-          gpsAddress: gpsData.address,
-          gpsUpdatedAt: Date.now()
-        };
-        if (gpsData.street) updatePayload.gpsStreet = gpsData.street;
-        if (gpsData.village) updatePayload.gpsVillage = gpsData.village;
-        if (gpsData.district) updatePayload.gpsDistrict = gpsData.district;
-        if (gpsData.regency) updatePayload.gpsRegency = gpsData.regency;
-        if (gpsData.province) updatePayload.gpsProvince = gpsData.province;
-        if (gpsData.postcode) updatePayload.gpsPostcode = gpsData.postcode;
-
-        update(ref(db, `users/${uid}`), updatePayload);
-      } catch {}
-    }).catch(() => {});
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [currentUser?.id]);
 
   // Smart Back-Button Navigation Controller
   useEffect(() => {

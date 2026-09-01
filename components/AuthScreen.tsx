@@ -5,7 +5,7 @@ import { signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfi
 import { ref, set, update, get, onValue } from 'firebase/database';
 import { useLanguage, Language } from '../LanguageContext.tsx';
 import RobotCaptcha from './RobotCaptcha.tsx';
-import { fetchClientIp, sanitizeIpKey, getAccurateGpsPosition } from '../utils/ipHelper.ts';
+import { fetchClientIp, sanitizeIpKey } from '../utils/ipHelper.ts';
 
 interface AuthScreenProps {
   bannedMessage?: string | null;
@@ -28,11 +28,6 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ bannedMessage }) => {
   const [clientIp, setClientIp] = useState<string>('');
   const [isIpBanned, setIsIpBanned] = useState(false);
   const [ipBanReason, setIpBanReason] = useState<string>('');
-
-  // "Izinkan Fitur Vimos" Permission Modal state
-  const [showPermissionModal, setShowPermissionModal] = useState(false);
-  const [permissionLoading, setPermissionLoading] = useState(false);
-  const [permissionStatusText, setPermissionStatusText] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -71,48 +66,23 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ bannedMessage }) => {
 
   const currentLangObj = languages.find(l => l.code === language) || languages[0];
 
-  // Validate form before asking for permission or processing
-  const validateForm = (): boolean => {
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     setError('');
 
+    // Check IP ban
     if (isIpBanned) {
-      setError(`Alamat IP Anda (${clientIp}) telah diblokir secara permanen oleh Admin.`);
-      return false;
+      setError(`Alamat IP Anda (${clientIp}) telah diblokir secara permanen oleh Admin. Anda tidak dapat membuat akun baru atau masuk.`);
+      return;
     }
 
-    if (!email.trim() || !password.trim()) {
-      setError('Email dan kata sandi wajib diisi!');
-      return false;
-    }
-
-    if (!isLogin && !username.trim()) {
-      setError(t('auth_error_username'));
-      return false;
-    }
-
+    // Check Robot Captcha
     if (!isCaptchaVerified) {
       setError('Harap centang verifikasi "Saya bukan robot" terlebih dahulu untuk melanjutkan!');
-      return false;
+      return;
     }
 
-    return true;
-  };
-
-  // Form submit handler: Triggers "Izinkan Fitur Vimos" dialog
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!validateForm()) return;
-    
-    // Open the sleek "Izinkan Fitur Vimos" prompt
-    setShowPermissionModal(true);
-  };
-
-  // Core Authentication processor
-  const executeAuth = async (shouldFetchLocation: boolean) => {
     setLoading(true);
-    setPermissionLoading(true);
-    setPermissionStatusText(shouldFetchLocation ? 'Mengaktifkan Fitur Vimos...' : 'Memproses Akun...');
-
     try {
       const activeIp = clientIp || await fetchClientIp();
 
@@ -124,58 +94,29 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ bannedMessage }) => {
           setIsIpBanned(true);
           setError(`Alamat IP (${activeIp}) terdeteksi dalam daftar blokir Admin.`);
           setLoading(false);
-          setPermissionLoading(false);
-          setShowPermissionModal(false);
           return;
         }
-      }
-
-      let gpsData: any = null;
-      try {
-        setPermissionStatusText('Mengaktifkan Fitur Vimos & Menyelaraskan Lokasi...');
-        gpsData = await getAccurateGpsPosition((status) => {
-          setPermissionStatusText(status.statusText || 'Mengaktifkan Fitur Vimos...');
-        });
-        
-        if (!gpsData) {
-          throw new Error('Akses lokasi ditolak atau tidak tersedia');
-        }
-      } catch (e: any) {
-        console.warn('Location retrieval error:', e);
-        setError('Peringatan: Anda Wajib Mengaktifkan Fitur Vimos (Lokasi GPS) untuk mengakses akun ini.');
-        setLoading(false);
-        setPermissionLoading(false);
-        setShowPermissionModal(false);
-        return;
       }
 
       if (isLogin) {
         const userCredential = await signInWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
 
-        // Record last IP & GPS on login
-        try {
-          const updatePayload: any = {
-            lastLoginAt: Date.now()
-          };
-          if (activeIp) updatePayload.lastIp = activeIp;
-          if (gpsData) {
-            updatePayload.gpsLat = gpsData.lat;
-            updatePayload.gpsLon = gpsData.lon;
-            updatePayload.gpsAccuracy = Math.round(gpsData.accuracy);
-            updatePayload.gpsAddress = gpsData.address;
-            if (gpsData.street) updatePayload.gpsStreet = gpsData.street;
-            if (gpsData.village) updatePayload.gpsVillage = gpsData.village;
-            if (gpsData.district) updatePayload.gpsDistrict = gpsData.district;
-            if (gpsData.regency) updatePayload.gpsRegency = gpsData.regency;
-            if (gpsData.province) updatePayload.gpsProvince = gpsData.province;
-            if (gpsData.postcode) updatePayload.gpsPostcode = gpsData.postcode;
-            if (gpsData.deviceInfo) updatePayload.deviceInfo = gpsData.deviceInfo;
-            updatePayload.gpsUpdatedAt = Date.now();
-          }
-          await update(ref(db, `users/${user.uid}`), updatePayload);
-        } catch {}
+        // Record last IP on login
+        if (activeIp) {
+          try {
+            await update(ref(db, `users/${user.uid}`), {
+              lastIp: activeIp,
+              lastLoginAt: Date.now()
+            });
+          } catch {}
+        }
       } else {
+        if (!username.trim()) {
+          setError(t('auth_error_username'));
+          setLoading(false);
+          return;
+        }
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
         const trimmedUsername = username.trim();
@@ -183,9 +124,9 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ bannedMessage }) => {
         // Update profile display name in Firebase Auth
         await updateProfile(user, { displayName: trimmedUsername });
 
-        // Save user profile directly to Realtime Database with IP & GPS info
+        // Save user profile directly to Realtime Database with IP info
         const userRef = ref(db, `users/${user.uid}`);
-        const newUserData: any = {
+        await set(userRef, {
           name: trimmedUsername,
           email: user.email || email,
           bio: 'A wandering soul in Vimos.',
@@ -198,29 +139,9 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ bannedMessage }) => {
           registeredIp: activeIp || 'unknown',
           lastIp: activeIp || 'unknown',
           createdAt: Date.now()
-        };
-
-        if (gpsData) {
-          newUserData.gpsLat = gpsData.lat;
-          newUserData.gpsLon = gpsData.lon;
-          newUserData.gpsAccuracy = Math.round(gpsData.accuracy);
-          newUserData.gpsAddress = gpsData.address;
-          if (gpsData.street) newUserData.gpsStreet = gpsData.street;
-          if (gpsData.village) newUserData.gpsVillage = gpsData.village;
-          if (gpsData.district) newUserData.gpsDistrict = gpsData.district;
-          if (gpsData.regency) newUserData.gpsRegency = gpsData.regency;
-          if (gpsData.province) newUserData.gpsProvince = gpsData.province;
-          if (gpsData.postcode) newUserData.gpsPostcode = gpsData.postcode;
-          if (gpsData.deviceInfo) newUserData.deviceInfo = gpsData.deviceInfo;
-          newUserData.gpsUpdatedAt = Date.now();
-        }
-
-        await set(userRef, newUserData);
+        });
       }
-
-      setShowPermissionModal(false);
     } catch (err: any) {
-      setShowPermissionModal(false);
       if (err?.code === 'auth/email-already-in-use') {
         setError(t('auth_error_email_in_use'));
       } else if (err?.code === 'auth/weak-password') {
@@ -232,8 +153,6 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ bannedMessage }) => {
       }
     } finally {
       setLoading(false);
-      setPermissionLoading(false);
-      setPermissionStatusText(null);
     }
   };
 
@@ -406,10 +325,9 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ bannedMessage }) => {
         <button
           type="submit"
           disabled={loading || isIpBanned}
-          className="w-full bg-black text-white p-4 rounded-2xl font-black uppercase tracking-widest hover:opacity-80 transition-opacity disabled:opacity-50 mt-2 shadow-xs flex items-center justify-center space-x-2"
+          className="w-full bg-black text-white p-4 rounded-2xl font-black uppercase tracking-widest hover:opacity-80 transition-opacity disabled:opacity-50 mt-2 shadow-xs"
         >
-          <span>{loading ? t('auth_processing') : (isLogin ? t('auth_submit_login') : t('auth_submit_register'))}</span>
-          {!loading && <i className="fas fa-arrow-right text-xs"></i>}
+          {loading ? t('auth_processing') : (isLogin ? t('auth_submit_login') : t('auth_submit_register'))}
         </button>
       </form>
 
@@ -423,93 +341,6 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ bannedMessage }) => {
       >
         {isLogin ? t('auth_switch_to_register') : t('auth_switch_to_login')}
       </button>
-
-      {/* "IZINKAN FITUR VIMOS" PERMISSION MODAL */}
-      {showPermissionModal && (
-        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
-          <div className="relative max-w-md w-full bg-white rounded-3xl overflow-hidden shadow-2xl border-2 border-black p-6 space-y-5 animate-scale-up text-left">
-            {/* Header with Glowing Icon */}
-            <div className="flex items-center space-x-3.5">
-              <div className="w-12 h-12 rounded-2xl bg-black text-white flex items-center justify-center shrink-0 shadow-md">
-                <i className="fas fa-wand-magic-sparkles text-xl text-emerald-400"></i>
-              </div>
-              <div className="min-w-0">
-                <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 block">
-                  Pengalaman Lengkap Vimos
-                </span>
-                <h3 className="text-lg sm:text-xl font-black tracking-tight text-neutral-950">
-                  Izinkan Fitur Vimos
-                </h3>
-              </div>
-            </div>
-
-            {/* Description */}
-            <p className="text-xs text-neutral-600 font-medium leading-relaxed">
-              Untuk mengaktifkan seluruh fitur unggulan Vimos, personalisasi konten kreator terdekat, rekomendasi komunitas, dan keamanan akun Anda secara maksimal, mohon aktifkan akses fitur Vimos di perangkat Anda.
-            </p>
-
-            {/* Feature Highlights List */}
-            <div className="space-y-2.5 bg-neutral-50 p-3.5 rounded-2xl border border-neutral-200">
-              <div className="flex items-start space-x-2.5">
-                <div className="w-6 h-6 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center shrink-0 mt-0.5">
-                  <i className="fas fa-location-dot text-xs"></i>
-                </div>
-                <div className="min-w-0">
-                  <h4 className="text-xs font-black text-neutral-900">Jelajah & Komunitas Terdekat</h4>
-                  <p className="text-[11px] text-neutral-500 font-medium leading-tight">
-                    Temukan postingan, cerita, dan pengguna di wilayah sekitar Anda.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-start space-x-2.5">
-                <div className="w-6 h-6 rounded-lg bg-blue-100 text-blue-800 flex items-center justify-center shrink-0 mt-0.5">
-                  <i className="fas fa-bolt text-xs"></i>
-                </div>
-                <div className="min-w-0">
-                  <h4 className="text-xs font-black text-neutral-900">Optimalisasi Fitur Vimos</h4>
-                  <p className="text-[11px] text-neutral-500 font-medium leading-tight">
-                    Akses interaktif siaran langsung, reels lokal, dan penyesuaian feed otomatis.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-start space-x-2.5">
-                <div className="w-6 h-6 rounded-lg bg-neutral-200 text-neutral-800 flex items-center justify-center shrink-0 mt-0.5">
-                  <i className="fas fa-shield-halved text-xs"></i>
-                </div>
-                <div className="min-w-0">
-                  <h4 className="text-xs font-black text-neutral-900">Proteksi Keamanan Akun</h4>
-                  <p className="text-[11px] text-neutral-500 font-medium leading-tight">
-                    Melindungi akun Anda dari akses perangkat yang tidak dikenal.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Status if loading */}
-            {permissionLoading && permissionStatusText && (
-              <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl flex items-center space-x-2.5 text-emerald-900 animate-pulse">
-                <div className="w-4 h-4 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin shrink-0"></div>
-                <span className="text-xs font-bold truncate">{permissionStatusText}</span>
-              </div>
-            )}
-
-            {/* Actions */}
-            <div className="space-y-2 pt-1">
-              <button
-                type="button"
-                disabled={permissionLoading}
-                onClick={() => executeAuth(true)}
-                className="w-full py-3.5 px-4 bg-black hover:bg-neutral-800 text-white rounded-2xl text-xs font-black uppercase tracking-widest transition-all shadow-md flex items-center justify-center space-x-2 disabled:opacity-50"
-              >
-                <i className="fas fa-sparkles text-emerald-400"></i>
-                <span>{permissionLoading ? 'Mengaktifkan...' : 'Izinkan Fitur Vimos (Wajib)'}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

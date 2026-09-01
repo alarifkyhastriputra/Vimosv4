@@ -4,7 +4,6 @@ import { db } from '../firebase';
 import { ref, onValue, set, remove, update } from 'firebase/database';
 import { AI_AVATAR_PRESETS } from './HengkurAIChat';
 import { sanitizeIpKey } from '../utils/ipHelper';
-import IpLocationModal from './IpLocationModal';
 
 interface AdminPanelProps {
   users: User[];
@@ -41,29 +40,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
   const [ipSearch, setIpSearch] = useState('');
   const [copiedIp, setCopiedIp] = useState<string | null>(null);
   const [ipActionSuccess, setIpActionSuccess] = useState<string | null>(null);
-
-  // IP Geolocation & Maps Modal Inspection State
-  const [inspectingIpData, setInspectingIpData] = useState<{
-    ip: string;
-    userName?: string;
-    userEmail?: string;
-    userPhoto?: string;
-    isBanned?: boolean;
-    gpsLat?: number;
-    gpsLon?: number;
-    gpsAccuracy?: number;
-    gpsAddress?: string;
-    gpsStreet?: string;
-    gpsVillage?: string;
-    gpsDistrict?: string;
-    gpsRegency?: string;
-    gpsProvince?: string;
-    gpsPostcode?: string;
-    gpsUpdatedAt?: number; deviceInfo?: any;
-  } | null>(null);
-
-  // Quick IP Geolocation Search input in IP Shield
-  const [quickLookupIp, setQuickLookupIp] = useState('');
 
   // AI Bot Admin Management
   const [botName, setBotName] = useState('vimos.ai');
@@ -413,40 +389,14 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                           </div>
                           <p className="text-[9px] font-bold text-gray-400 truncate uppercase tracking-widest">{user.email}</p>
                           
-                          {/* IP Address & Granular Geolocation Tags */}
-                          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                            <div 
-                              onClick={() => {
-                                if (userIp || user.gpsLat) {
-                                  setInspectingIpData({
-                                    ip: userIp || 'GPS Direct',
-                                    userName: user.name,
-                                    userEmail: user.email,
-                                    userPhoto: user.photoURL,
-                                    isBanned: isThisIpBanned,
-                                    gpsLat: user.gpsLat,
-                                    gpsLon: user.gpsLon,
-                                    gpsAccuracy: user.gpsAccuracy,
-                                    gpsAddress: user.gpsAddress,
-                                    gpsStreet: user.gpsStreet,
-                                    gpsVillage: user.gpsVillage,
-                                    gpsDistrict: user.gpsDistrict,
-                                    gpsRegency: user.gpsRegency,
-                                    gpsProvince: user.gpsProvince,
-                                    gpsPostcode: user.gpsPostcode,
-                                    gpsUpdatedAt: user.gpsUpdatedAt,
-                                    deviceInfo: user.deviceInfo
-                                  });
-                                }
-                              }}
-                              className={`inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg border text-[10px] font-mono font-bold cursor-pointer transition-all ${
-                                isThisIpBanned 
-                                  ? 'bg-red-100 border-red-300 text-red-700 hover:bg-red-200' 
-                                  : 'bg-neutral-100 border-neutral-200 text-neutral-700 hover:bg-neutral-200 hover:border-black'
-                              }`}
-                              title="Klik untuk melihat rincian Kecamatan, Gang, Desa & Peta Google Maps"
-                            >
-                              <i className={`fas ${isThisIpBanned ? 'fa-ban text-red-500' : 'fa-map-pin text-emerald-600'} text-[9px]`}></i>
+                          {/* IP Address Details with badge & copy button */}
+                          <div className="flex items-center space-x-2 mt-1.5">
+                            <div className={`inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-lg border text-[10px] font-mono font-bold ${
+                              isThisIpBanned 
+                                ? 'bg-red-100 border-red-300 text-red-700' 
+                                : 'bg-neutral-100 border-neutral-200 text-neutral-700'
+                            }`}>
+                              <i className={`fas ${isThisIpBanned ? 'fa-ban text-red-500' : 'fa-network-wired text-neutral-400'} text-[9px]`}></i>
                               <span>IP: {userIp || 'Belum tercatat'}</span>
                               {userIp && (
                                 <button
@@ -462,76 +412,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                                 </button>
                               )}
                             </div>
-
-                            {/* Real GPS Physical Location Tag with Kecamatan & Gang */}
-                            {(user.gpsAddress || user.gpsDistrict || user.gpsStreet) && (
-                              <div 
-                                onClick={() => {
-                                  setInspectingIpData({
-                                    ip: userIp || 'GPS Direct',
-                                    userName: user.name,
-                                    userEmail: user.email,
-                                    userPhoto: user.photoURL,
-                                    isBanned: isThisIpBanned,
-                                    gpsLat: user.gpsLat,
-                                    gpsLon: user.gpsLon,
-                                    gpsAccuracy: user.gpsAccuracy,
-                                    gpsAddress: user.gpsAddress,
-                                    gpsStreet: user.gpsStreet,
-                                    gpsVillage: user.gpsVillage,
-                                    gpsDistrict: user.gpsDistrict,
-                                    gpsRegency: user.gpsRegency,
-                                    gpsProvince: user.gpsProvince,
-                                    gpsPostcode: user.gpsPostcode,
-                                    gpsUpdatedAt: user.gpsUpdatedAt,
-                                    deviceInfo: user.deviceInfo
-                                  });
-                                }}
-                                className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-emerald-100/90 border border-emerald-300 text-emerald-900 text-[9px] font-bold cursor-pointer hover:bg-emerald-200 transition-all max-w-[280px] truncate shadow-2xs"
-                                title={`Lokasi Fisik: ${user.gpsAddress || 'Terdeteksi'}`}
-                              >
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                                <i className="fas fa-location-dot text-[8px] text-emerald-600"></i>
-                                <span className="truncate">
-                                  {user.gpsDistrict ? `Kec. ${user.gpsDistrict}` : ''}
-                                  {user.gpsDistrict && (user.gpsStreet || user.gpsVillage) ? ' • ' : ''}
-                                  {user.gpsStreet || user.gpsVillage || user.gpsRegency || user.gpsAddress?.split(',')[0] || 'GPS Terdeteksi'}
-                                </span>
-                              </div>
-                            )}
-                            
-                            {(userIp || user.gpsLat) && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setInspectingIpData({
-                                    ip: userIp || 'GPS Direct',
-                                    userName: user.name,
-                                    userEmail: user.email,
-                                    userPhoto: user.photoURL,
-                                    isBanned: isThisIpBanned,
-                                    gpsLat: user.gpsLat,
-                                    gpsLon: user.gpsLon,
-                                    gpsAccuracy: user.gpsAccuracy,
-                                    gpsAddress: user.gpsAddress,
-                                    gpsStreet: user.gpsStreet,
-                                    gpsVillage: user.gpsVillage,
-                                    gpsDistrict: user.gpsDistrict,
-                                    gpsRegency: user.gpsRegency,
-                                    gpsProvince: user.gpsProvince,
-                                    gpsPostcode: user.gpsPostcode,
-                                    gpsUpdatedAt: user.gpsUpdatedAt,
-                                    deviceInfo: user.deviceInfo
-                                  });
-                                }}
-                                className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[9px] font-black uppercase tracking-wider transition-all shadow-xs"
-                                title="Lihat Kecamatan, Gang & Peta Akurat"
-                              >
-                                <i className="fas fa-map-location-dot text-[9px]"></i>
-                                <span>Lihat Peta & Wilayah</span>
-                              </button>
-                            )}
-
                             {isThisIpBanned && (
                               <span className="bg-red-600 text-white text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider">
                                 IP Terblokir
@@ -543,7 +423,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                       {user.isBanned && <span className="text-[8px] font-black text-red-600 border border-red-600 px-2 py-1 rounded-full uppercase tracking-tighter">Banished</span>}
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                    <div className="grid grid-cols-4 gap-2 pt-1">
                       <button 
                         onClick={() => onToggleAdmin && onToggleAdmin(user.id, Boolean(user.isAdmin))} 
                         className={`py-2 px-1 rounded-xl text-[9px] font-black uppercase tracking-wider border-2 transition-all flex items-center justify-center space-x-1 ${
@@ -589,8 +469,8 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                   <i className="fas fa-shield-halved text-xl"></i>
                 </div>
                 <div>
-                  <h3 className="text-sm font-black uppercase tracking-wider">Perlindungan Anti-Spam, Blokir IP & Pelacakan Maps</h3>
-                  <p className="text-[10px] text-neutral-400 font-medium">Lacak koordinat GPS, alamat presisi, dan peta Google Maps pengguna serta blokir IP pelanggar.</p>
+                  <h3 className="text-sm font-black uppercase tracking-wider">Perlindungan Anti-Spam & Blokir IP</h3>
+                  <p className="text-[10px] text-neutral-400 font-medium">Blokir alamat IP pelanggar agar tidak dapat mendaftar akun baru ataupun login.</p>
                 </div>
               </div>
               <div className="text-right">
@@ -598,48 +478,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                 <span className="block text-[8px] font-black uppercase tracking-widest text-neutral-400">IP Diblokir</span>
               </div>
             </div>
-          </div>
-
-          {/* Quick IP Geolocation & Maps Inspector Tool */}
-          <div className="p-5 border-2 border-black rounded-3xl bg-emerald-50/50 shadow-sm space-y-3">
-            <div className="flex items-center space-x-2">
-              <div className="w-7 h-7 rounded-xl bg-emerald-600 text-white flex items-center justify-center text-xs">
-                <i className="fas fa-map-location-dot"></i>
-              </div>
-              <div>
-                <h4 className="text-xs font-black uppercase tracking-wider text-neutral-900">
-                  Pelacak Lokasi & Google Maps Akurat
-                </h4>
-                <p className="text-[10px] text-neutral-600 font-medium">
-                  Ketik alamat IP apa pun untuk melihat estimasi alamat kota/wilayah, ISP, dan peta Google Maps langsung.
-                </p>
-              </div>
-            </div>
-            <form 
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (quickLookupIp.trim()) {
-                  setInspectingIpData({ ip: quickLookupIp.trim() });
-                }
-              }}
-              className="flex items-center space-x-2"
-            >
-              <input
-                type="text"
-                value={quickLookupIp}
-                onChange={(e) => setQuickLookupIp(e.target.value)}
-                placeholder="Masukkan alamat IP (cth: 182.253.120.45)..."
-                className="flex-1 bg-white border-2 border-black rounded-xl px-4 py-2.5 text-xs font-mono font-bold focus:outline-none focus:ring-0"
-              />
-              <button
-                type="submit"
-                disabled={!quickLookupIp.trim()}
-                className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-black text-xs uppercase tracking-wider px-5 py-2.5 rounded-xl transition-all shadow-xs flex items-center space-x-1.5"
-              >
-                <i className="fas fa-search-location"></i>
-                <span>Cek Maps</span>
-              </button>
-            </form>
           </div>
 
           {/* Form Tambah Manual Blokir IP */}
@@ -719,9 +557,9 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                     (b.reason || '').toLowerCase().includes(s);
                 })
                 .map((b) => (
-                  <div key={b.sanitizedIp} className="p-4 bg-white border-2 border-red-200 rounded-2xl shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div key={b.sanitizedIp} className="p-4 bg-white border-2 border-red-200 rounded-2xl shadow-xs flex items-center justify-between space-x-4">
                     <div className="space-y-1 flex-1 min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex items-center space-x-2">
                         <span className="font-mono font-black text-sm text-red-600 bg-red-50 px-2.5 py-0.5 rounded-lg border border-red-200">
                           {b.ip}
                         </span>
@@ -748,32 +586,14 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                       </div>
                     </div>
 
-                    <div className="flex items-center space-x-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setInspectingIpData({
-                            ip: b.ip,
-                            userName: b.associatedUserName,
-                            userEmail: b.associatedUserEmail,
-                            isBanned: true
-                          });
-                        }}
-                        className="px-3 py-2 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border border-emerald-300 flex items-center space-x-1.5"
-                      >
-                        <i className="fas fa-map-location-dot text-[9px]"></i>
-                        <span>Lihat Maps</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleUnbanIp(b.sanitizedIp, b.ip)}
-                        className="px-4 py-2 bg-neutral-100 hover:bg-emerald-500 hover:text-white text-neutral-700 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border border-neutral-300 hover:border-emerald-600 shrink-0 flex items-center space-x-1"
-                      >
-                        <i className="fas fa-unlock text-[9px]"></i>
-                        <span>Buka Blokir</span>
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleUnbanIp(b.sanitizedIp, b.ip)}
+                      className="px-4 py-2 bg-neutral-100 hover:bg-emerald-500 hover:text-white text-neutral-700 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border border-neutral-300 hover:border-emerald-600 shrink-0 flex items-center space-x-1"
+                    >
+                      <i className="fas fa-unlock text-[9px]"></i>
+                      <span>Buka Blokir</span>
+                    </button>
                   </div>
                 ))
             )}
@@ -1085,59 +905,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
           </div>
         </div>
-      )}
-
-      {/* IP Geolocation & Interactive Maps Modal */}
-      {inspectingIpData && (
-        <IpLocationModal
-          ip={inspectingIpData.ip}
-          userName={inspectingIpData.userName}
-          userEmail={inspectingIpData.userEmail}
-          userPhoto={inspectingIpData.userPhoto}
-          isBanned={inspectingIpData.isBanned}
-          gpsLat={inspectingIpData.gpsLat}
-          gpsLon={inspectingIpData.gpsLon}
-          gpsAccuracy={inspectingIpData.gpsAccuracy}
-          gpsAddress={inspectingIpData.gpsAddress}
-          gpsStreet={inspectingIpData.gpsStreet}
-          gpsVillage={inspectingIpData.gpsVillage}
-          gpsDistrict={inspectingIpData.gpsDistrict}
-          gpsRegency={inspectingIpData.gpsRegency}
-          gpsProvince={inspectingIpData.gpsProvince}
-          gpsPostcode={inspectingIpData.gpsPostcode}
-          gpsUpdatedAt={inspectingIpData.gpsUpdatedAt}
-          onClose={() => setInspectingIpData(null)}
-          onBanIp={async (targetIp) => {
-            const sanitized = sanitizeIpKey(targetIp);
-            const reason = window.prompt(`Masukkan alasan pemblokiran IP ${targetIp}:`, 'Pelanggaran spam/bot akun');
-            if (reason === null) return;
-            try {
-              await set(ref(db, `bannedIps/${sanitized}`), {
-                ip: targetIp,
-                sanitizedIp: sanitized,
-                bannedAt: Date.now(),
-                bannedBy: 'Admin Geolocation Inspector',
-                reason: reason || 'Diblokir oleh Administrator',
-                associatedUserName: inspectingIpData.userName,
-                associatedUserEmail: inspectingIpData.userEmail
-              });
-              setIpActionSuccess(`Alamat IP ${targetIp} berhasil diblokir!`);
-              setTimeout(() => setIpActionSuccess(null), 4000);
-            } catch (e) {
-              alert('Gagal memproses pemblokiran IP.');
-            }
-          }}
-          onUnbanIp={async (targetIp) => {
-            const sanitized = sanitizeIpKey(targetIp);
-            try {
-              await remove(ref(db, `bannedIps/${sanitized}`));
-              setIpActionSuccess(`Blokir alamat IP ${targetIp} berhasil dicabut.`);
-              setTimeout(() => setIpActionSuccess(null), 3000);
-            } catch (e) {
-              alert('Gagal membuka blokir IP.');
-            }
-          }}
-        />
       )}
     </div>
   );

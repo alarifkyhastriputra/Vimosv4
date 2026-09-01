@@ -121,7 +121,6 @@ const HengkurAIChat: React.FC<HengkurAIChatProps> = ({
 
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const isSendingRef = useRef(false);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [copyAllSuccess, setCopyAllSuccess] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -238,8 +237,7 @@ const HengkurAIChat: React.FC<HengkurAIChatProps> = ({
 
   const handleSendMessage = async (textToSend?: string) => {
     const messageText = (textToSend || input).trim();
-    if (!messageText || isLoading || isSendingRef.current) return;
-    isSendingRef.current = true;
+    if (!messageText || isLoading) return;
 
     const userMessage: Message = {
       id: `user_${Date.now()}`,
@@ -255,7 +253,7 @@ const HengkurAIChat: React.FC<HengkurAIChatProps> = ({
 
     try {
       // Build history for context
-      const historyPayload = messages.slice(-8).map((m) => ({
+      const historyPayload = newMessages.slice(-8).map((m) => ({
         role: m.sender === 'user' ? 'user' : 'model',
         text: m.text,
       }));
@@ -297,7 +295,6 @@ const HengkurAIChat: React.FC<HengkurAIChatProps> = ({
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
-      isSendingRef.current = false;
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   };
@@ -386,7 +383,7 @@ const HengkurAIChat: React.FC<HengkurAIChatProps> = ({
   };
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 bg-white relative animate-fade-in">
+    <div className="flex flex-col h-full bg-white relative animate-fade-in">
       {/* Top AI Header */}
       <div className="px-4 py-3 border-b border-black/10 bg-white/95 backdrop-blur-md sticky top-0 z-20 flex items-center justify-between shadow-xs">
         <div className="flex items-center space-x-3 min-w-0">
@@ -523,7 +520,7 @@ const HengkurAIChat: React.FC<HengkurAIChatProps> = ({
       )}
 
       {/* Chat Messages List */}
-      <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 bg-neutral-50/50">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-neutral-50/50">
         {/* Suggestion Chips Banner */}
         {messages.length <= 2 && (
           <div className="mb-4">
@@ -671,7 +668,7 @@ const HengkurAIChat: React.FC<HengkurAIChatProps> = ({
           e.preventDefault();
           handleSendMessage();
         }}
-        className="p-3 bg-white border-t border-neutral-200 flex items-center space-x-2 shrink-0 relative z-10"
+        className="p-3 bg-white border-t border-neutral-200 flex items-center space-x-2"
       >
         <input
           ref={inputRef}
