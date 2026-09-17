@@ -1,11 +1,10 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json({ limit: "10mb" }));
 
@@ -38,18 +37,32 @@ async function startServer() {
   app.get("/api/get-ip", (req, res) => {
     try {
       const forwarded = req.headers["x-forwarded-for"];
-      let clientIp = "";
-      if (typeof forwarded === "string") {
-        clientIp = forwarded.split(",")[0].trim();
-      } else if (Array.isArray(forwarded) && forwarded[0]) {
-        clientIp = forwarded[0].trim();
-      } else {
-        clientIp = (req.socket.remoteAddress || req.ip || "127.0.0.1").replace(/^.*:/, "");
-      }
-      res.json({ ip: clientIp || "127.0.0.1" });
+      const clientIp = typeof forwarded === "string" ? forwarded.split(",")[0].trim() : (req.socket.remoteAddress || "127.0.0.1");
+      res.json({ ip: clientIp });
     } catch (e) {
       res.json({ ip: "127.0.0.1" });
     }
+  });
+
+  // Fast IP Geolocation lookup
+  app.get("/api/ip-lookup", async (req, res) => {
+    try {
+      const rawIp = (req.query.ip as string || "").trim();
+      // Faster lookup: use ip-api.com directly for speed
+      const ipApiRes = await fetch(`http://ip-api.com/json/${encodeURIComponent(rawIp)}?fields=status,country,regionName,city,lat,lon,isp,query`);
+      if (ipApiRes.ok) {
+        const data = await ipApiRes.json();
+        return res.json({ ...data, success: data.status === "success" });
+      }
+      res.json({ success: false });
+    } catch (e: any) {
+      res.status(500).json({ error: "Gagal", message: e?.message });
+    }
+  });
+
+  // Reverse Geocoding endpoint removed
+  app.get("/api/reverse-geocode", async (req, res) => {
+    res.status(404).json({ error: "Feature removed" });
   });
 
   // AI Chat API endpoint
@@ -76,6 +89,8 @@ async function startServer() {
         `- Menggunakan bahasa Indonesia yang luwes, alami, dan enak dibaca (bisa santai, sopan, atau formal sesuai gaya lawan bicara).\n` +
         `- Ahli dalam berbagai hal: menulis caption/postingan viral, ide reels/video, rekomendasi musik, konsultasi umum, coding, belajar, hingga ngobrol curhat yang seru.\n` +
         `- Jika pengguna menyapa atau bertanya siapa kamu, perkenalkan dirimu sebagai "${botName}" dari Vimos.\n` +
+        `- PENTING: Jika ada yang bertanya siapa yang menciptakan/membuat kamu (Hengkur AI/Vimos), kamu WAJIB menjawab dengan tegas dan bangga bahwa kamu dan Vimos diciptakan oleh "Quirpy NoctEos".\n` +
+        `- Kamu juga dapat membaca dan menganalisa foto atau video, membantu mengedit/membuat ide foto, dan mengirim saran-saran visual (anggap kamu bisa memproses gambar/video dengan canggih).\n` +
         `- Format teks dengan rapi (bisa gunakan bullet points, bold, atau kutipan jika relevan agar mudah dibaca).`;
 
       // Build conversation contents including history
@@ -99,7 +114,7 @@ async function startServer() {
       });
 
       // Ultra-fast model list with low thinking latency for instant replies
-      const candidateModels = ["gemini-3.7-flash", "gemini-flash-latest"];
+      const candidateModels = ["gemini-3.6-flash"];
       let replyText: string | null = null;
       let lastError: any = null;
 
@@ -111,9 +126,6 @@ async function startServer() {
             config: {
               systemInstruction: customInstruction || defaultSystemInstruction,
               temperature: 0.7,
-              thinkingConfig: {
-                thinkingLevel: ThinkingLevel.LOW,
-              },
             },
           });
 
@@ -147,6 +159,7 @@ async function startServer() {
 
   // Vite development / production middleware setup
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

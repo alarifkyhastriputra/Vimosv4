@@ -1,11 +1,14 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, Post } from '../types.ts';
 import UserListModal from './UserListModal.tsx';
 import PostCard from './PostCard.tsx';
 import { useLanguage } from '../LanguageContext.tsx';
 import { SHOP_ITEMS } from './Shop.tsx';
 import { compressImage } from '../services/imageCompressor.ts';
+import { db } from '../firebase.ts';
+import { ref, onValue, set, remove } from 'firebase/database';
+import { isSharedGroupMember, canViewUserSerial } from '../utils/userPrivacy.ts';
 
 interface ProfileProps {
   user: User;
@@ -68,6 +71,121 @@ const Profile = ({
   const isAdminViewing = currentUser.isAdmin;
   const isTargetAdmin = user.isAdmin;
   const isBanned = user.isBanned;
+
+  // Saved contact (WhatsApp-style contact name synchronization)
+  const [savedContact, setSavedContact] = useState<{ customName: string; serialCode?: string } | null>(null);
+  const [isContactModalOpen, setIsContactModalOpen] = useState(false);
+  const [contactCustomName, setContactCustomName] = useState('');
+  const [inputSerialCode, setInputSerialCode] = useState('');
+  const [serialError, setSerialError] = useState('');
+  const [autoNavigateChatOnSave, setAutoNavigateChatOnSave] = useState(false);
+  const [contactSaving, setContactSaving] = useState(false);
+  const [isSharedGroup, setIsSharedGroup] = useState(false);
+
+  useEffect(() => {
+    if (isMe || !currentUser?.id || !user?.id) {
+      setSavedContact(null);
+      return;
+    }
+    const contactRef = ref(db, `users/${currentUser.id}/savedContacts/${user.id}`);
+    const unsub = onValue(contactRef, (snap) => {
+      if (snap.exists()) {
+        setSavedContact(snap.val());
+      } else {
+        setSavedContact(null);
+      }
+    });
+    return () => unsub();
+  }, [currentUser?.id, user?.id, isMe]);
+
+  // Check if currentUser and this user share at least one group
+  useEffect(() => {
+    if (isMe || !currentUser?.id || !user?.id) {
+      setIsSharedGroup(false);
+      return;
+    }
+    const groupsRef = ref(db, 'groups');
+    const unsub = onValue(groupsRef, (snap) => {
+      if (snap.exists()) {
+        setIsSharedGroup(isSharedGroupMember(currentUser.id, user.id, snap.val()));
+      } else {
+        setIsSharedGroup(false);
+      }
+    });
+    return () => unsub();
+  }, [currentUser?.id, user?.id, isMe]);
+
+  const canViewSerial = canViewUserSerial({
+    currentUserId: currentUser?.id,
+    targetUserId: user.id,
+    isSavedContact: Boolean(savedContact),
+    isSharedGroup
+  });
+
+  const handleSaveContact = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser?.id || !user?.id) return;
+    const finalCustomName = contactCustomName.trim() || user.name || 'Kontak Vimos';
+
+    setSerialError('');
+
+    // If user does not currently have this person's serial code, verify it strictly!
+    const targetSerial = (user.serialCode || ('ORB-' + user.id.substring(0, 6).toUpperCase())).toUpperCase();
+    if (!canViewSerial) {
+      const cleanInput = inputSerialCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const cleanTarget = targetSerial.replace(/[^A-Z0-9]/g, '');
+      const rawInput = inputSerialCode.trim().toUpperCase();
+
+      if (!cleanInput) {
+        setSerialError('Nomor seri wajib diisi untuk membuka obrolan atau menyimpan kontak.');
+        return;
+      }
+
+      if (cleanInput !== cleanTarget && rawInput !== targetSerial) {
+        setSerialError(`Nomor seri "${rawInput}" salah! Anda tidak bisa mengobrol tanpa nomor seri yang sesuai.`);
+        return;
+      }
+    }
+
+    setContactSaving(true);
+    
+    const contactRef = ref(db, `users/${currentUser.id}/savedContacts/${user.id}`);
+    
+    // Optimistic save
+    set(contactRef, {
+      id: user.id,
+      contactUserId: user.id,
+      userId: user.id,
+      customName: finalCustomName,
+      serialCode: targetSerial,
+      savedAt: Date.now(),
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    }).catch(err => {
+      console.error('Gagal menyimpan kontak:', err);
+    });
+
+    setIsContactModalOpen(false);
+    setInputSerialCode('');
+    setSerialError('');
+    setContactSaving(false);
+
+    // If triggered from "Pesan" button, immediately navigate to chat now that serial code is verified!
+    if (autoNavigateChatOnSave && onNavigateToChat) {
+      onNavigateToChat(user.id);
+    }
+  };
+
+  const handleDeleteContact = async () => {
+    if (!currentUser?.id || !user?.id) return;
+    if (!confirm('Hapus kontak ini dari daftar kontak tersimpan Anda?')) return;
+    try {
+      await remove(ref(db, `users/${currentUser.id}/savedContacts/${user.id}`));
+      setIsContactModalOpen(false);
+    } catch (err: any) {
+      alert('Gagal menghapus kontak: ' + (err?.message || 'Coba lagi'));
+    }
+  };
 
   const followersList = users.filter(u => (user.followers || []).includes(u.id));
   const followingList = users.filter(u => (user.following || []).includes(u.id));
@@ -219,14 +337,110 @@ const Profile = ({
           </div>
         ) : (
           <div className="text-center w-full">
-            <h2 
-              className={`text-3xl font-black uppercase tracking-tighter mb-2 flex items-center justify-center space-x-1 ${isBanned ? 'text-red-600' : ''}`}
-              style={user.roleColor ? { color: user.roleColor } : undefined}
-            >
-              <span>{displayName}</span>
-              {user.equippedBadge && <span className="text-xl ml-1">{user.equippedBadge}</span>}
-            </h2>
+            {/* WhatsApp-style Custom Contact Name */}
+            {savedContact && (
+              <div className="inline-flex items-center space-x-1.5 bg-emerald-100/90 text-emerald-800 px-3 py-1 rounded-full mb-2 border border-emerald-300 shadow-2xs">
+                <i className="fas fa-address-book text-emerald-600 text-xs"></i>
+                <span className="text-xs font-black tracking-tight">
+                  Kontak: {savedContact.customName}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setContactCustomName(savedContact.customName);
+                    setIsContactModalOpen(true);
+                  }}
+                  className="text-emerald-700 hover:text-emerald-950 ml-1 p-0.5 cursor-pointer"
+                  title="Ganti Nama Kontak"
+                >
+                  <i className="fas fa-pen text-[10px]"></i>
+                </button>
+              </div>
+            )}
+
+            <div className="flex items-center justify-center space-x-2 mb-1.5">
+              <h2 
+                className={`text-2xl font-black uppercase tracking-tight flex items-center justify-center space-x-1.5 ${isBanned ? 'text-red-600' : ''}`}
+                style={user.roleColor ? { color: user.roleColor } : undefined}
+              >
+                <span>{displayName}</span>
+                {user.isVerified && (
+                  <span className="text-blue-500 text-lg" title="Akun Terverifikasi">
+                    <i className="fas fa-circle-check"></i>
+                  </span>
+                )}
+                {user.equippedBadge && <span className="text-lg ml-1">{user.equippedBadge}</span>}
+              </h2>
+            </div>
+
+            {/* Display Serial Code with Strict Privacy (Only Self, Saved Contacts, or Shared Group) */}
+            {canViewSerial ? (
+              <div className="inline-flex items-center space-x-2 bg-neutral-900 text-white px-3.5 py-1.5 rounded-full mb-3 shadow-xs">
+                <i className="fas fa-id-badge text-yellow-400 text-xs"></i>
+                <span className="text-[10px] font-black uppercase tracking-wider text-neutral-400">
+                  {isMe ? 'Kode Seri Anda:' : savedContact ? 'Kode Seri (Kontak):' : 'Kode Seri (Satu Grup):'}
+                </span>
+                <span className="font-mono font-black text-xs tracking-wider text-white">
+                  {user.serialCode || ('ORB-' + user.id.substring(0, 6).toUpperCase())}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const code = user.serialCode || ('ORB-' + user.id.substring(0, 6).toUpperCase());
+                    navigator.clipboard?.writeText(code);
+                    alert(`Kode Seri (${code}) berhasil disalin!`);
+                  }}
+                  className="text-neutral-400 hover:text-white transition-colors ml-1 p-0.5 cursor-pointer"
+                  title="Salin Kode Seri"
+                >
+                  <i className="fas fa-copy text-[11px]"></i>
+                </button>
+              </div>
+            ) : (
+              <div 
+                className="inline-flex items-center space-x-2 bg-neutral-100 text-neutral-600 px-3.5 py-1.5 rounded-full mb-3 border border-neutral-200"
+                title="Kode seri disembunyikan untuk privasi. Hanya bisa dilihat jika satu grup atau sudah disimpan ke kontak."
+              >
+                <i className="fas fa-lock text-neutral-400 text-xs"></i>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Kode Seri:</span>
+                <span className="font-mono text-xs text-neutral-400 tracking-widest font-black">••••••••</span>
+                <span className="text-[9px] bg-neutral-200 text-neutral-600 font-bold px-1.5 py-0.5 rounded-md">
+                  Privat
+                </span>
+              </div>
+            )}
             
+            {/* Display Recovery Key for Profile Owner */}
+            {isMe && (
+              <div className="bg-amber-50 border border-amber-200 p-3 rounded-2xl mb-4 max-w-sm mx-auto shadow-xs text-center">
+                <div className="flex items-center justify-center space-x-1.5 text-amber-900 mb-1">
+                  <i className="fas fa-key text-xs text-amber-600"></i>
+                  <p className="text-[10px] font-black uppercase tracking-widest">Kunci Pemulihan Akun (Recovery Key)</p>
+                </div>
+                <div className="flex items-center justify-center space-x-2 bg-white border border-amber-200 py-1.5 px-3 rounded-xl">
+                  <p className="text-base font-mono font-black text-neutral-900 tracking-wider">
+                    {user.recoveryKey || 'ORB-REC-KEY'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (user.recoveryKey) {
+                        navigator.clipboard?.writeText(user.recoveryKey);
+                        alert(`Recovery Key (${user.recoveryKey}) berhasil disalin! Simpan dengan aman untuk reset password.`);
+                      }
+                    }}
+                    className="p-1 hover:bg-amber-100 rounded-lg text-amber-700 transition-colors cursor-pointer"
+                    title="Salin Recovery Key"
+                  >
+                    <i className="fas fa-copy text-xs"></i>
+                  </button>
+                </div>
+                <p className="text-[9px] text-amber-700 font-semibold mt-1">
+                  Gunakan key ini untuk mereset kata sandi akun jika lupa password.
+                </p>
+              </div>
+            )}
+
             {/* Admin-only Email View */}
             {isAdminViewing && (
               <div className="flex items-center justify-center space-x-1.5 mb-2 group">
@@ -275,14 +489,46 @@ const Profile = ({
                         </button>
                         {onNavigateToChat && (
                           <button
-                            onClick={() => onNavigateToChat(user.id)}
-                            className="px-5 py-3 rounded-full text-[10px] font-black uppercase tracking-widest transition-all border-2 border-black bg-neutral-900 text-white hover:bg-black shadow-lg active:scale-95 flex items-center space-x-1.5"
-                            title="Kirim Pesan Langsung"
+                            onClick={() => {
+                              if (!canViewSerial) {
+                                setContactCustomName(user.name || '');
+                                setInputSerialCode('');
+                                setSerialError('');
+                                setAutoNavigateChatOnSave(true);
+                                setIsContactModalOpen(true);
+                              } else {
+                                onNavigateToChat(user.id);
+                              }
+                            }}
+                            className={`px-5 py-3 rounded-full text-[10px] font-black uppercase tracking-widest transition-all border-2 shadow-lg active:scale-95 flex items-center space-x-1.5 ${
+                              canViewSerial 
+                                ? 'border-black bg-neutral-900 text-white hover:bg-black' 
+                                : 'border-neutral-800 bg-neutral-800 text-amber-300 hover:bg-black'
+                            }`}
+                            title={canViewSerial ? "Kirim Pesan Langsung" : "Butuh Nomor Seri untuk Memulai Obrolan"}
                           >
-                            <i className="fas fa-comment-dots text-xs"></i>
-                            <span>Pesan</span>
+                            <i className={`fas ${canViewSerial ? 'fa-comment-dots' : 'fa-lock'} text-xs`}></i>
+                            <span>{canViewSerial ? 'Pesan' : 'Chat'}</span>
                           </button>
                         )}
+                        <button
+                          onClick={() => {
+                            setContactCustomName(savedContact?.customName || user.name || '');
+                            setInputSerialCode('');
+                            setSerialError('');
+                            setAutoNavigateChatOnSave(false);
+                            setIsContactModalOpen(true);
+                          }}
+                          className={`px-4 py-3 rounded-full text-[10px] font-black uppercase tracking-wider transition-all border-2 shadow-lg active:scale-95 flex items-center space-x-1.5 ${
+                            savedContact
+                              ? 'border-emerald-600 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                              : 'border-black bg-white text-black hover:bg-neutral-100'
+                          }`}
+                          title={savedContact ? 'Ganti Nama Kontak' : 'Simpan Kontak'}
+                        >
+                          <i className={`fas ${savedContact ? 'fa-user-pen text-emerald-600' : 'fa-user-plus text-black'} text-xs`}></i>
+                          <span>{savedContact ? 'Ganti Nama' : '+ Kontak'}</span>
+                        </button>
                       </div>
                     )}
                     
@@ -493,57 +739,21 @@ const Profile = ({
               {t('settings')}
             </h3>
 
-            <div className="space-y-6">
-              <div className="space-y-2">
-                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">
-                  {t('language')}
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => setLanguage('id')}
-                    className={`p-3 rounded-2xl border-2 font-bold text-xs transition-all flex items-center justify-center space-x-1.5 ${
-                      language === 'id' 
-                        ? 'border-black bg-black text-white shadow-md' 
-                        : 'border-gray-200 hover:border-black text-gray-600'
-                    }`}
-                  >
-                    <span>🇮🇩</span>
-                    <span>{t('indonesian')}</span>
-                  </button>
-                  <button
-                    onClick={() => setLanguage('en')}
-                    className={`p-3 rounded-2xl border-2 font-bold text-xs transition-all flex items-center justify-center space-x-1.5 ${
-                      language === 'en' 
-                        ? 'border-black bg-black text-white shadow-md' 
-                        : 'border-gray-200 hover:border-black text-gray-600'
-                    }`}
-                  >
-                    <span>🇺🇸</span>
-                    <span>{t('english')}</span>
-                  </button>
-                  <button
-                    onClick={() => setLanguage('ja')}
-                    className={`p-3 rounded-2xl border-2 font-bold text-xs transition-all flex items-center justify-center space-x-1.5 ${
-                      language === 'ja' 
-                        ? 'border-black bg-black text-white shadow-md' 
-                        : 'border-gray-200 hover:border-black text-gray-600'
-                    }`}
-                  >
-                    <span>🇯🇵</span>
-                    <span>{t('japanese')}</span>
-                  </button>
-                  <button
-                    onClick={() => setLanguage('zh')}
-                    className={`p-3 rounded-2xl border-2 font-bold text-xs transition-all flex items-center justify-center space-x-1.5 ${
-                      language === 'zh' 
-                        ? 'border-black bg-black text-white shadow-md' 
-                        : 'border-gray-200 hover:border-black text-gray-600'
-                    }`}
-                  >
-                    <span>🇨🇳</span>
-                    <span>{t('chinese')}</span>
-                  </button>
+            <div className="space-y-5">
+              {/* VIMOS Official Brand Badge */}
+              <div className="bg-black text-white p-4 rounded-2xl flex items-center justify-between shadow-md">
+                <div className="flex items-center space-x-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-white text-black flex items-center justify-center font-black text-sm shadow-xs">
+                    V
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black tracking-tight uppercase">VIMOS</h4>
+                    <p className="text-[10px] text-neutral-400 font-medium">Media Sosial &amp; Chat</p>
+                  </div>
                 </div>
+                <span className="text-[9px] font-mono font-bold bg-neutral-800 text-yellow-400 px-2 py-1 rounded-lg border border-neutral-700">
+                  Official
+                </span>
               </div>
 
               <div className="border-t border-gray-100 pt-4 flex flex-col space-y-2">
@@ -559,6 +769,138 @@ const Profile = ({
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+      {/* WHATSAPP-STYLE CONTACT MODAL & SERIAL UNLOCK */}
+      {isContactModalOpen && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-fade-in text-left">
+          <div className="relative w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl border-2 border-black animate-scale-up">
+            <div className="flex items-center justify-between pb-3 mb-4 border-b border-neutral-100">
+              <div className="flex items-center space-x-2.5">
+                <div className={`w-9 h-9 rounded-2xl flex items-center justify-center shadow-xs text-white ${
+                  !canViewSerial ? 'bg-amber-500' : 'bg-emerald-500'
+                }`}>
+                  <i className={`fas ${!canViewSerial ? 'fa-key' : 'fa-address-book'} text-sm`}></i>
+                </div>
+                <div>
+                  <h4 className="text-sm font-black uppercase tracking-tight text-neutral-900">
+                    {savedContact 
+                      ? 'Ganti Nama Kontak' 
+                      : autoNavigateChatOnSave 
+                        ? 'Buka Obrolan' 
+                        : 'Simpan ke Kontak'}
+                  </h4>
+                  <p className="text-[10px] text-neutral-400 font-bold">
+                    @{user.name}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsContactModalOpen(false);
+                  setSerialError('');
+                  setInputSerialCode('');
+                }}
+                className="w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 text-neutral-600 flex items-center justify-center text-xs"
+              >
+                <i className="fas fa-times"></i>
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveContact} className="space-y-4">
+              {/* If user does not have this person's serial code, they must enter it to unlock! */}
+              {!canViewSerial && (
+                <div className="space-y-1.5 p-3.5 bg-amber-50/80 border border-amber-200 rounded-2xl">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-amber-900">
+                      Nomor Seri Akun (Wajib)
+                    </label>
+                    <span className="text-[9px] font-black text-amber-800 bg-amber-200/80 px-1.5 py-0.2 rounded">
+                      🔒 Terkunci
+                    </span>
+                  </div>
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    value={inputSerialCode}
+                    onChange={(e) => {
+                      setInputSerialCode(e.target.value.toUpperCase());
+                      setSerialError('');
+                    }}
+                    placeholder="Contoh: ORB-123456"
+                    className="w-full p-2.5 bg-white border-2 border-amber-300 focus:border-black rounded-xl text-xs font-mono font-black tracking-wider text-black focus:outline-none transition-all uppercase placeholder:font-sans placeholder:tracking-normal placeholder:text-gray-400"
+                  />
+                  <p className="text-[10px] text-amber-800/80 font-medium leading-relaxed">
+                    Anda tidak bisa mengobrol tanpa nomor seri pemilik akun. Minta nomor seri kepada <strong>@{user.name}</strong> untuk melanjutkan.
+                  </p>
+                  {serialError && (
+                    <div className="p-2 bg-red-100 border border-red-300 rounded-xl text-red-700 text-[11px] font-black flex items-center space-x-1.5 animate-shake">
+                      <i className="fas fa-triangle-exclamation shrink-0"></i>
+                      <span>{serialError}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-neutral-600 ml-1 block mb-1.5">
+                  Nama Panggilan Kontak (Hanya Anda yang Melihat)
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus={canViewSerial}
+                  value={contactCustomName}
+                  onChange={(e) => setContactCustomName(e.target.value)}
+                  placeholder="Misal: Kak Budi, Teman Kampus"
+                  className="w-full p-3 bg-neutral-50 border-2 border-neutral-200 focus:border-black rounded-xl text-sm font-bold text-neutral-900 focus:outline-none transition-all"
+                />
+                <p className="text-[10px] text-neutral-500 font-medium mt-1.5 ml-1">
+                  Mirip seperti WhatsApp, nama ini akan menggantikan username publik di pesan &amp; kontak Anda.
+                </p>
+              </div>
+
+              <div className="pt-2 flex items-center space-x-2">
+                {savedContact && (
+                  <button
+                    type="button"
+                    onClick={handleDeleteContact}
+                    className="p-3 border-2 border-red-200 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl text-xs font-black uppercase tracking-wider transition-colors cursor-pointer"
+                    title="Hapus dari Kontak"
+                  >
+                    <i className="fas fa-trash-can"></i>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsContactModalOpen(false);
+                    setSerialError('');
+                    setInputSerialCode('');
+                  }}
+                  className="flex-1 py-3 border-2 border-neutral-200 hover:border-black rounded-xl text-xs font-black uppercase tracking-wider text-neutral-700 transition-colors"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={contactSaving || !contactCustomName.trim() || (!canViewSerial && !inputSerialCode.trim())}
+                  className="flex-1 py-3 bg-black hover:bg-neutral-800 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md transition-all disabled:opacity-50 flex items-center justify-center space-x-1.5 cursor-pointer"
+                >
+                  <i className={`fas ${!canViewSerial ? 'fa-key' : 'fa-check'} text-xs`}></i>
+                  <span>
+                    {contactSaving 
+                      ? 'Memverifikasi...' 
+                      : (!canViewSerial && autoNavigateChatOnSave)
+                        ? 'Buka Obrolan'
+                        : 'Simpan Kontak'}
+                  </span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

@@ -53,6 +53,45 @@ const CHALLENGE_SETS = [
       { id: 5, label: 'Sepatu', icon: 'fas fa-shoe-prints', isCorrect: false },
       { id: 6, label: 'Payung', icon: 'fas fa-umbrella', isCorrect: false },
     ]
+  },
+  {
+    targetLabel: 'Hewan',
+    targetIcon: 'fa-paw',
+    instruction: 'Pilih semua ikon hewan:',
+    items: [
+      { id: 1, label: 'Anjing', icon: 'fas fa-dog', isCorrect: true },
+      { id: 2, label: 'Kucing', icon: 'fas fa-cat', isCorrect: true },
+      { id: 3, label: 'Ikan', icon: 'fas fa-fish', isCorrect: true },
+      { id: 4, label: 'Mobil', icon: 'fas fa-car', isCorrect: false },
+      { id: 5, label: 'Pesawat', icon: 'fas fa-plane', isCorrect: false },
+      { id: 6, label: 'Pohon', icon: 'fas fa-tree', isCorrect: false },
+    ]
+  },
+  {
+    targetLabel: 'Kendaraan',
+    targetIcon: 'fa-car-side',
+    instruction: 'Pilih semua ikon kendaraan:',
+    items: [
+      { id: 1, label: 'Mobil', icon: 'fas fa-car', isCorrect: true },
+      { id: 2, label: 'Sepeda', icon: 'fas fa-bicycle', isCorrect: true },
+      { id: 3, label: 'Bus', icon: 'fas fa-bus', isCorrect: true },
+      { id: 4, label: 'Buku', icon: 'fas fa-book', isCorrect: false },
+      { id: 5, label: 'Payung', icon: 'fas fa-umbrella', isCorrect: false },
+      { id: 6, label: 'Gitar', icon: 'fas fa-guitar', isCorrect: false },
+    ]
+  },
+  {
+    targetLabel: 'Makanan',
+    targetIcon: 'fa-pizza-slice',
+    instruction: 'Pilih semua ikon makanan:',
+    items: [
+      { id: 1, label: 'Pizza', icon: 'fas fa-pizza-slice', isCorrect: true },
+      { id: 2, label: 'Burger', icon: 'fas fa-burger', isCorrect: true },
+      { id: 3, label: 'Kopi', icon: 'fas fa-mug-hot', isCorrect: true },
+      { id: 4, label: 'Gembok', icon: 'fas fa-lock', isCorrect: false },
+      { id: 5, label: 'Bulan', icon: 'fas fa-moon', isCorrect: false },
+      { id: 6, label: 'Perisai', icon: 'fas fa-shield-halved', isCorrect: false },
+    ]
   }
 ];
 
@@ -110,7 +149,10 @@ const RobotCaptcha: React.FC<RobotCaptchaProps> = ({ onVerify, isVerified, disab
       setChallengeError(true);
       // Switch to another challenge set on error
       setTimeout(() => {
-        const nextIndex = (currentSetIndex + 1) % CHALLENGE_SETS.length;
+        let nextIndex;
+        do {
+          nextIndex = Math.floor(Math.random() * CHALLENGE_SETS.length);
+        } while (nextIndex === currentSetIndex && CHALLENGE_SETS.length > 1);
         setCurrentSetIndex(nextIndex);
         setSelectedItemIds([]);
         setChallengeError(false);
@@ -125,7 +167,10 @@ const RobotCaptcha: React.FC<RobotCaptchaProps> = ({ onVerify, isVerified, disab
   };
 
   const handleRefreshChallenge = () => {
-    const nextIndex = (currentSetIndex + 1) % CHALLENGE_SETS.length;
+    let nextIndex;
+    do {
+      nextIndex = Math.floor(Math.random() * CHALLENGE_SETS.length);
+    } while (nextIndex === currentSetIndex && CHALLENGE_SETS.length > 1);
     setCurrentSetIndex(nextIndex);
     setSelectedItemIds([]);
     setChallengeError(false);

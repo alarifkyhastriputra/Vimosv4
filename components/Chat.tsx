@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, ChatMessage, Group } from '../types.ts';
+import { User, ChatMessage, Group, SavedContact } from '../types.ts';
 import { db } from '../firebase.ts';
 import { ref, onValue, push, serverTimestamp, set, update, remove, get } from 'firebase/database';
 import { ActiveCall } from './CallingOverlay.tsx';
 import { useLanguage } from '../LanguageContext.tsx';
-import HengkurAIChat from './HengkurAIChat.tsx';
 import { compressImage } from '../services/imageCompressor.ts';
+import { isSharedGroupMember, canViewUserSerial } from '../utils/userPrivacy.ts';
 
 interface ChatProps {
   users: User[];
@@ -47,40 +47,37 @@ const Chat: React.FC<ChatProps> = ({
   const [isViewingGroupSettings, setIsViewingGroupSettings] = useState(false);
   const [groupName, setGroupName] = useState('');
   const [selectedForGroup, setSelectedForGroup] = useState<string[]>([]);
-  const [activeTab, setActiveTab] = useState<'direct' | 'shop' | 'groups' | 'anonymous' | 'hengkur_ai'>('direct');
-  const [botName, setBotName] = useState<string>('vimos.ai');
-  const [botAvatar, setBotAvatar] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<'direct' | 'contacts' | 'shop' | 'groups'>('direct');
 
-  // Sync AI Bot Name and Avatar from Firebase RTDB
-  useEffect(() => {
-    const configRef = ref(db, 'appConfig');
-    const unsub = onValue(configRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const val = snapshot.val();
-        if (val) {
-          if (typeof val.aiBotName === 'string' && val.aiBotName.trim()) {
-            setBotName(val.aiBotName.trim());
-          } else {
-            setBotName('vimos.ai');
-          }
-          if (typeof val.aiBotAvatar === 'string') {
-            setBotAvatar(val.aiBotAvatar.trim());
-          } else {
-            setBotAvatar('');
-          }
-          return;
-        }
-      }
-      setBotName('vimos.ai');
-      setBotAvatar('');
-    });
-    return () => unsub();
-  }, []);
   const [shopSearchQuery, setShopSearchQuery] = useState('');
   const [directSearchQuery, setDirectSearchQuery] = useState('');
+  const [contactsSearchQuery, setContactsSearchQuery] = useState('');
   const [addMemberSearch, setAddMemberSearch] = useState('');
   const [groupMemberSearch, setGroupMemberSearch] = useState('');
   const [activeMenuMsgId, setActiveMenuMsgId] = useState<string | null>(null);
+
+  // WhatsApp-Style Contacts System State
+  const [savedContacts, setSavedContacts] = useState<Record<string, SavedContact>>({});
+  const [isAddContactOpen, setIsAddContactOpen] = useState(false);
+  const [addContactSerial, setAddContactSerial] = useState('');
+  const [addContactCustomName, setAddContactCustomName] = useState('');
+  const [searchedContactUser, setSearchedContactUser] = useState<User | null>(null);
+  const [addContactError, setAddContactError] = useState('');
+  const [addContactSuccess, setAddContactSuccess] = useState('');
+  const [addContactLoading, setAddContactLoading] = useState(false);
+
+  // Edit Contact Name Modal State
+  const [isEditContactOpen, setIsEditContactOpen] = useState(false);
+  const [editingContact, setEditingContact] = useState<{ contactUserId: string; currentCustomName: string; user?: User } | null>(null);
+  const [editContactNewName, setEditContactNewName] = useState('');
+  const [editContactLoading, setEditContactLoading] = useState(false);
+
+  // Serial Code Unlock Modal (When attempting to chat with a user whose serial code is unknown)
+  const [unlockUserModal, setUnlockUserModal] = useState<User | null>(null);
+  const [unlockSerialInput, setUnlockSerialInput] = useState('');
+  const [unlockCustomName, setUnlockCustomName] = useState('');
+  const [unlockError, setUnlockError] = useState('');
+  const [unlockLoading, setUnlockLoading] = useState(false);
 
   // Custom Confirmation Modal Pop-Up State
   const [confirmModal, setConfirmModal] = useState<{
@@ -112,13 +109,6 @@ const Chat: React.FC<ChatProps> = ({
   }
   const [shopChatThreads, setShopChatThreads] = useState<ShopChatThread[]>([]);
 
-  // Anonymous Chat States
-  const [isSearchingAnon, setIsSearchingAnon] = useState(false);
-  const [activeAnonRoomId, setActiveAnonRoomId] = useState<string | null>(null);
-  const [activeAnonRoom, setActiveAnonRoom] = useState<any | null>(null);
-  const [anonMessages, setAnonMessages] = useState<{ id: string; senderId: string; text: string; timestamp: number }[]>([]);
-  const [anonInputMsg, setAnonInputMsg] = useState('');
-
   // Media Attachment States for Photos & Videos in Chat
   const [selectedMedia, setSelectedMedia] = useState<{
     url: string;
@@ -139,7 +129,6 @@ const Chat: React.FC<ChatProps> = ({
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const chatTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const anonTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-resize chat textarea when message changes or is cleared
   useEffect(() => {
@@ -148,13 +137,6 @@ const Chat: React.FC<ChatProps> = ({
       chatTextareaRef.current.style.height = `${Math.min(chatTextareaRef.current.scrollHeight, 120)}px`;
     }
   }, [msg]);
-
-  useEffect(() => {
-    if (anonTextareaRef.current) {
-      anonTextareaRef.current.style.height = 'auto';
-      anonTextareaRef.current.style.height = `${Math.min(anonTextareaRef.current.scrollHeight, 100)}px`;
-    }
-  }, [anonInputMsg]);
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>, forcedType?: 'image' | 'video') => {
     const file = e.target.files?.[0];
@@ -263,6 +245,292 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   const mutualFollowers = users.filter(u => u.id !== currentUser?.id && isMutual(u.id));
+
+  // Real-time listener for current user's saved contacts (WhatsApp-like Contacts)
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const contactsRef = ref(db, `users/${currentUser.id}/savedContacts`);
+    const unsubscribe = onValue(contactsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data && typeof data === 'object') {
+        setSavedContacts(data);
+      } else {
+        setSavedContacts({});
+      }
+    });
+    return () => unsubscribe();
+  }, [currentUser?.id]);
+
+  // Helper to resolve contact name or fallback to user.name
+  const getContactDisplayName = (targetUser?: User | null, fallbackId?: string) => {
+    const uid = targetUser?.id || fallbackId;
+    if (uid && savedContacts[uid]?.customName) {
+      return savedContacts[uid].customName;
+    }
+    if (targetUser?.name) return targetUser.name;
+    return 'Pengguna Vimos';
+  };
+
+  const isUserSavedInContacts = (userId?: string) => {
+    if (!userId) return false;
+    return Boolean(savedContacts[userId]);
+  };
+
+  // Search User by Serial Code for Add Contact
+  const handleSearchSerial = async (serialQuery: string) => {
+    const raw = serialQuery.trim().toUpperCase();
+    if (!raw) {
+      setAddContactError('Silakan masukkan Nomor Seri pengguna');
+      setSearchedContactUser(null);
+      return;
+    }
+
+    setAddContactLoading(true);
+    setAddContactError('');
+    setAddContactSuccess('');
+
+    // Check if it's user's own serial
+    const mySerial = (currentUser?.serialCode || ('ORB-' + currentUser?.id?.substring(0, 6))).toUpperCase();
+    const myShort = currentUser?.id ? currentUser.id.substring(0, 6).toUpperCase() : '';
+    if (raw === mySerial || (myShort && raw.includes(myShort))) {
+      setAddContactError('Ini adalah Nomor Seri akun Anda sendiri! Masukkan nomor seri orang lain untuk menambah kontak.');
+      setSearchedContactUser(null);
+      setAddContactLoading(false);
+      return;
+    }
+
+    const cleanQuery = raw.replace(/[^A-Z0-9]/g, '');
+
+    // 1. Check local loaded users
+    let found = users.find(u => {
+      const uSerial = (u.serialCode || ('ORB-' + u.id.substring(0, 6))).toUpperCase();
+      const uClean = uSerial.replace(/[^A-Z0-9]/g, '');
+      const uidShort = u.id.substring(0, 6).toUpperCase();
+      return uSerial === raw || uClean === cleanQuery || (cleanQuery.length >= 5 && uClean.includes(cleanQuery)) || uidShort === cleanQuery;
+    });
+
+    // 2. If not found, fetch all users from Firebase Realtime Database
+    if (!found) {
+      try {
+        const usersSnap = await get(ref(db, 'users'));
+        if (usersSnap.exists()) {
+          const val = usersSnap.val();
+          for (const [uid, uData] of Object.entries<any>(val)) {
+            const uSerial = (uData.serialCode || ('ORB-' + uid.substring(0, 6))).toUpperCase();
+            const uClean = uSerial.replace(/[^A-Z0-9]/g, '');
+            const uidShort = uid.substring(0, 6).toUpperCase();
+            if (uSerial === raw || uClean === cleanQuery || (cleanQuery.length >= 5 && uClean.includes(cleanQuery)) || uidShort === cleanQuery) {
+              found = {
+                id: uid,
+                name: uData.name || 'Orbit Member',
+                email: uData.email || '',
+                totalLikes: uData.totalLikes || 0,
+                photoURL: uData.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${uid}&backgroundColor=000000`,
+                bio: uData.bio || '',
+                serialCode: uData.serialCode || uSerial,
+                isVerified: Boolean(uData.isVerified || uData.authProvider === 'google'),
+                role: uData.role,
+                roleColor: uData.roleColor,
+                followers: uData.followers ? Object.keys(uData.followers) : [],
+                following: uData.following ? Object.keys(uData.following) : []
+              };
+              break;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Error querying user by serial:', err);
+      }
+    }
+
+    if (found) {
+      if (found.id === currentUser?.id) {
+        setAddContactError('Ini adalah Nomor Seri akun Anda sendiri.');
+        setSearchedContactUser(null);
+      } else {
+        setSearchedContactUser(found);
+        const existing = savedContacts[found.id];
+        setAddContactCustomName(existing ? existing.customName : found.name);
+      }
+    } else {
+      setAddContactError(`Pengguna dengan nomor seri "${raw}" tidak ditemukan. Pastikan nomor seri sudah benar.`);
+      setSearchedContactUser(null);
+    }
+    setAddContactLoading(false);
+  };
+
+  // Save Contact Handler
+  const handleSaveContact = async () => {
+    if (!currentUser?.id || !searchedContactUser) return;
+    const finalCustomName = addContactCustomName.trim() || searchedContactUser.name || 'Kontak Vimos';
+    const targetId = searchedContactUser.id;
+    const serial = searchedContactUser.serialCode || ('ORB-' + targetId.substring(0, 6).toUpperCase());
+
+    setAddContactLoading(true);
+    setAddContactError('');
+    try {
+      const contactData: SavedContact = {
+        id: targetId,
+        contactUserId: targetId,
+        customName: finalCustomName,
+        serialCode: serial,
+        createdAt: savedContacts[targetId]?.createdAt || Date.now(),
+        updatedAt: Date.now()
+      };
+
+      await set(ref(db, `users/${currentUser.id}/savedContacts/${targetId}`), contactData);
+      setAddContactSuccess(`Kontak "${finalCustomName}" berhasil disimpan!`);
+      setSavedContacts(prev => ({
+        ...prev,
+        [targetId]: contactData
+      }));
+    } catch (err: any) {
+      setAddContactError('Gagal menyimpan kontak: ' + (err?.message || 'Silakan coba lagi'));
+    } finally {
+      setAddContactLoading(false);
+    }
+  };
+
+  // Open Edit Contact Modal
+  const handleOpenEditContact = (targetUserId: string, currentCustomName: string, targetUser?: User) => {
+    setEditingContact({
+      contactUserId: targetUserId,
+      currentCustomName,
+      user: targetUser || users.find(u => u.id === targetUserId)
+    });
+    setEditContactNewName(currentCustomName);
+    setIsEditContactOpen(true);
+  };
+
+  // Save Updated Contact Name
+  const handleUpdateContactName = async () => {
+    if (!currentUser?.id || !editingContact) return;
+    const trimmed = editContactNewName.trim();
+    if (!trimmed) {
+      alert('Nama kontak tidak boleh kosong');
+      return;
+    }
+
+    setEditContactLoading(true);
+    try {
+      await update(ref(db, `users/${currentUser.id}/savedContacts/${editingContact.contactUserId}`), {
+        customName: trimmed,
+        updatedAt: Date.now()
+      });
+
+      setSavedContacts(prev => ({
+        ...prev,
+        [editingContact.contactUserId]: {
+          ...prev[editingContact.contactUserId],
+          customName: trimmed,
+          updatedAt: Date.now()
+        }
+      }));
+
+      setIsEditContactOpen(false);
+      setEditingContact(null);
+    } catch (err: any) {
+      alert('Gagal mengubah nama kontak: ' + (err?.message || 'Coba lagi'));
+    } finally {
+      setEditContactLoading(false);
+    }
+  };
+
+  // Delete Contact
+  const handleDeleteContact = (contactUserId: string, contactName: string) => {
+    if (!currentUser?.id) return;
+    setConfirmModal({
+      isOpen: true,
+      title: 'Hapus Kontak?',
+      message: `Apakah Anda yakin ingin menghapus "${contactName}" dari buku kontak Anda? Riwayat percakapan tidak akan terhapus.`,
+      confirmText: 'Hapus Kontak',
+      onConfirm: async () => {
+        try {
+          await remove(ref(db, `users/${currentUser.id}/savedContacts/${contactUserId}`));
+          setSavedContacts(prev => {
+            const next = { ...prev };
+            delete next[contactUserId];
+            return next;
+          });
+        } catch (err) {
+          console.error('Error deleting contact:', err);
+        }
+        setConfirmModal(null);
+      }
+    });
+  };
+
+  // Serial Code Unlock Handlers (Require knowing the user's serial code before chatting)
+  const handlePromptUnlock = (targetUser: User) => {
+    setUnlockUserModal(targetUser);
+    setUnlockSerialInput('');
+    setUnlockCustomName(savedContacts[targetUser.id]?.customName || targetUser.name || '');
+    setUnlockError('');
+    setUnlockLoading(false);
+  };
+
+  const handleSubmitUnlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!unlockUserModal || !currentUser?.id) return;
+    const targetUser = unlockUserModal;
+    const targetSerial = (targetUser.serialCode || ('ORB-' + targetUser.id.substring(0, 6).toUpperCase())).toUpperCase();
+    const cleanTarget = targetSerial.replace(/[^A-Z0-9]/g, '');
+    const cleanInput = unlockSerialInput.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const rawInput = unlockSerialInput.trim().toUpperCase();
+
+    if (!cleanInput) {
+      setUnlockError('Nomor seri wajib diisi.');
+      return;
+    }
+
+    if (cleanInput !== cleanTarget && rawInput !== targetSerial) {
+      setUnlockError(`Nomor seri "${rawInput}" salah! Anda tidak dapat mengobrol tanpa nomor seri yang sesuai.`);
+      return;
+    }
+
+    setUnlockLoading(true);
+    setUnlockError('');
+    
+    const finalCustomName = unlockCustomName.trim() || targetUser.name || 'Kontak Vimos';
+    const contactData: SavedContact = {
+      id: targetUser.id,
+      contactUserId: targetUser.id,
+      customName: finalCustomName,
+      serialCode: targetSerial,
+      createdAt: savedContacts[targetUser.id]?.createdAt || Date.now(),
+      updatedAt: Date.now()
+    };
+
+    // Optimistic update
+    set(ref(db, `users/${currentUser.id}/savedContacts/${targetUser.id}`), contactData)
+      .catch(err => console.error('Gagal menyimpan kontak:', err));
+
+    setSavedContacts(prev => ({
+      ...prev,
+      [targetUser.id]: contactData
+    }));
+    setSelectedRecipient({ type: 'user', data: targetUser });
+    setUnlockUserModal(null);
+    setUnlockSerialInput('');
+    setUnlockCustomName('');
+    setUnlockLoading(false);
+  };
+
+  // Quick Add To Contacts (from chat header or direct chat list)
+  const handleQuickAddContact = (targetUser: User) => {
+    const hasSerial = Boolean(savedContacts[targetUser.id]) || isSharedGroupMember(currentUser?.id, targetUser.id, groups);
+    if (hasSerial) {
+      const serial = targetUser.serialCode || ('ORB-' + targetUser.id.substring(0, 6).toUpperCase());
+      setAddContactSerial(serial);
+      setSearchedContactUser(targetUser);
+      setAddContactCustomName(savedContacts[targetUser.id]?.customName || targetUser.name || 'Kontak Baru');
+      setAddContactError('');
+      setAddContactSuccess('');
+      setIsAddContactOpen(true);
+    } else {
+      handlePromptUnlock(targetUser);
+    }
+  };
 
   // Target User Auto-Selection for Direct Chat / Jual Beli
   useEffect(() => {
@@ -790,94 +1058,14 @@ const Chat: React.FC<ChatProps> = ({
     });
   };
 
-  const handleDeleteAnonMessageForMe = async (msgId: string, e?: React.MouseEvent) => {
-    if (e) {
-      e.stopPropagation();
-      e.preventDefault();
-    }
-    if (!currentUser || !activeAnonRoomId) return;
-
-    setAnonMessages(prev => prev.filter(m => m.id !== msgId));
-
-    try {
-      const safeUserId = getSafeKey(currentUser.id);
-      await set(ref(db, `anonymous_rooms/${activeAnonRoomId}/messages/${msgId}/deletedFor/${safeUserId}`), true);
-    } catch (err) {
-      console.error('Failed to delete anon message:', err);
-    }
-  };
-
-  // Sync Anonymous Rooms & Matches
-  useEffect(() => {
-    if (!currentUser) return;
-
-    const roomsRef = ref(db, 'anonymous_rooms');
-    const unsubscribe = onValue(roomsRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const foundEntry = Object.entries(data).find(([id, roomVal]: [string, any]) => {
-          return (
-            roomVal &&
-            roomVal.status === 'active' &&
-            roomVal.participants &&
-            roomVal.participants[currentUser.id] === true
-          );
-        });
-
-        if (foundEntry) {
-          const [roomId, roomVal] = foundEntry;
-          setActiveAnonRoomId(roomId);
-          setActiveAnonRoom({ id: roomId, ...(roomVal as Record<string, any>) });
-          setIsSearchingAnon(false);
-          remove(ref(db, `anonymous_queue/${currentUser.id}`));
-        } else {
-          setActiveAnonRoomId(null);
-          setActiveAnonRoom(null);
-        }
-      } else {
-        setActiveAnonRoomId(null);
-        setActiveAnonRoom(null);
-      }
-    });
-
-    return () => unsubscribe();
-  }, [currentUser]);
-
-  // Sync Anonymous Messages
-  useEffect(() => {
-    if (!activeAnonRoomId) {
-      setAnonMessages([]);
-      return;
-    }
-
-    const messagesRef = ref(db, `anonymous_rooms/${activeAnonRoomId}/messages`);
-    const unsubscribe = onValue(messagesRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const msgList = Object.entries(data)
-          .map(([id, val]: [string, any]) => ({
-            id,
-            ...val
-          }))
-          .filter((m: any) => !m.deletedFor || !m.deletedFor[currentUser?.id || ''])
-          .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-        setAnonMessages(msgList);
-      } else {
-        setAnonMessages([]);
-      }
-    });
-
-    return () => unsubscribe();
-  }, [activeAnonRoomId]);
-
   // Auto scroll to bottom when new messages arrive
   useEffect(() => {
     if (messages.length > 0) {
       setTimeout(() => {
-        chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        chatBottomRef.current?.scrollIntoView({ behavior: 'auto' });
       }, 100);
     }
-  }, [messages.length]);
+  }, [messages.length, selectedRecipient]);
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
@@ -891,6 +1079,12 @@ const Chat: React.FC<ChatProps> = ({
     let chatPath = '';
     if (selectedRecipient.type === 'user') {
       const otherUser = selectedRecipient.data as User;
+      const isSaved = Boolean(savedContacts[otherUser.id]);
+      const isSharedGroup = isSharedGroupMember(currentUser.id, otherUser.id, groups);
+      if (!isSaved && !isSharedGroup) {
+        handlePromptUnlock(otherUser);
+        return;
+      }
       const chatId = getChatId(currentUser.id, otherUser.id);
       chatPath = `chats/${chatId}/messages`;
 
@@ -959,7 +1153,7 @@ const Chat: React.FC<ChatProps> = ({
 
     // Scroll to bottom immediately
     setTimeout(() => {
-      chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      chatBottomRef.current?.scrollIntoView({ behavior: 'auto' });
     }, 50);
   };
 
@@ -1083,106 +1277,6 @@ const Chat: React.FC<ChatProps> = ({
     );
   };
 
-  // Anonymous Handlers
-  const handleFindAnonMatch = async () => {
-    if (!currentUser) return;
-    setIsSearchingAnon(true);
-
-    try {
-      const queueRef = ref(db, 'anonymous_queue');
-      const snapshot = await get(queueRef);
-      const queueData = snapshot.val();
-
-      let matchedUserId: string | null = null;
-      if (queueData) {
-        const candidateKeys = Object.keys(queueData).filter((uid) => uid !== currentUser.id);
-        if (candidateKeys.length > 0) {
-          matchedUserId = candidateKeys[0];
-        }
-      }
-
-      if (matchedUserId) {
-        const newRoomRef = push(ref(db, 'anonymous_rooms'));
-        const newRoomId = newRoomRef.key;
-        if (newRoomId) {
-          await set(newRoomRef, {
-            id: newRoomId,
-            status: 'active',
-            createdAt: Date.now(),
-            participants: {
-              [currentUser.id]: true,
-              [matchedUserId]: true
-            },
-            revealed: {
-              [currentUser.id]: false,
-              [matchedUserId]: false
-            }
-          });
-
-          await remove(ref(db, `anonymous_queue/${matchedUserId}`));
-          await remove(ref(db, `anonymous_queue/${currentUser.id}`));
-
-          setActiveAnonRoomId(newRoomId);
-          setIsSearchingAnon(false);
-        }
-      } else {
-        await set(ref(db, `anonymous_queue/${currentUser.id}`), {
-          uid: currentUser.id,
-          joinedAt: Date.now()
-        });
-      }
-    } catch (err) {
-      console.error("Error finding match:", err);
-      setIsSearchingAnon(false);
-    }
-  };
-
-  const handleCancelSearch = async () => {
-    if (!currentUser) return;
-    setIsSearchingAnon(false);
-    await remove(ref(db, `anonymous_queue/${currentUser.id}`));
-  };
-
-  const handleSendAnonMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!anonInputMsg.trim() || !activeAnonRoomId || !currentUser) return;
-
-    const messagesRef = ref(db, `anonymous_rooms/${activeAnonRoomId}/messages`);
-    await push(messagesRef, {
-      senderId: currentUser.id,
-      text: anonInputMsg.trim(),
-      timestamp: Date.now()
-    });
-
-    setAnonInputMsg('');
-  };
-
-  const handleLeaveAnonRoom = async () => {
-    if (!activeAnonRoomId) return;
-    await update(ref(db, `anonymous_rooms/${activeAnonRoomId}`), {
-      status: 'ended'
-    });
-    setActiveAnonRoomId(null);
-    setActiveAnonRoom(null);
-  };
-
-  const handleNextMatch = async () => {
-    await handleLeaveAnonRoom();
-    await handleFindAnonMatch();
-  };
-
-  const handleFollowAndReveal = async (partnerId: string) => {
-    if (!currentUser || !activeAnonRoomId) return;
-
-    if (onFollow) {
-      onFollow(partnerId);
-    }
-
-    await update(ref(db, `anonymous_rooms/${activeAnonRoomId}/revealed`), {
-      [currentUser.id]: true
-    });
-  };
-
   // Helper to render custom confirmation modal for all view states
   const renderConfirmModal = () => {
     if (!confirmModal || !confirmModal.isOpen) return null;
@@ -1217,177 +1311,465 @@ const Chat: React.FC<ChatProps> = ({
     );
   };
 
-  // If currently inside an active Anonymous Room
-  if (activeAnonRoomId && activeAnonRoom) {
-    const partnerUid = Object.keys(activeAnonRoom.participants || {}).find(id => id !== currentUser?.id);
-    const partnerUser = partnerUid ? users.find(u => u.id === partnerUid) : null;
-
-    const isSelfRevealed = activeAnonRoom.revealed?.[currentUser?.id || ''] === true;
-    const isPartnerSelfRevealed = partnerUid ? activeAnonRoom.revealed?.[partnerUid] === true : false;
-    const isFollowingPartner = currentUser?.following?.includes(partnerUid || '');
-
-    const isPartnerRevealed = isSelfRevealed || isPartnerSelfRevealed || isFollowingPartner;
-
-    const maskedAvatar = `https://api.dicebear.com/7.x/bottts/svg?seed=${partnerUid || 'anon'}`;
-    const displayName = isPartnerRevealed
-      ? (partnerUser?.name || 'Partner')
-      : `Pengguna Anonim #${partnerUid ? partnerUid.substring(0, 4).toUpperCase() : '????'}`;
-    const displayPhoto = isPartnerRevealed
-      ? (partnerUser?.photoURL || maskedAvatar)
-      : maskedAvatar;
-
+  // Render WhatsApp-Style Add Contact & Rename Contact Modals
+  const renderContactModals = () => {
     return (
-      <div className="flex flex-col h-[calc(100vh-140px)] bg-zinc-950 text-white animate-fade-in rounded-3xl overflow-hidden border-2 border-red-900/40 shadow-2xl">
-        {/* Top Header */}
-        <div className="p-4 bg-zinc-900 border-b border-white/10 flex items-center justify-between shadow-md">
-          <div className="flex items-center space-x-3">
-            <button
-              onClick={handleLeaveAnonRoom}
-              className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors"
-              title="Keluar Chat"
-            >
-              <i className="fas fa-arrow-left text-sm"></i>
-            </button>
+      <>
+        {/* ADD CONTACT MODAL (Using Serial Code) */}
+        {isAddContactOpen && (
+          <div 
+            className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in"
+            onClick={() => {
+              if (!addContactLoading) setIsAddContactOpen(false);
+            }}
+          >
             <div 
-              className={`relative ${isPartnerRevealed ? 'cursor-pointer' : ''}`}
-              onClick={() => {
-                if (isPartnerRevealed && partnerUid) {
-                  onUserClick(partnerUid);
-                }
-              }}
+              className="bg-white rounded-3xl w-full max-w-md p-6 shadow-2xl border border-black/10 animate-scale-up space-y-4"
+              onClick={(e) => e.stopPropagation()}
             >
-              <img
-                src={displayPhoto}
-                alt={displayName}
-                className="w-11 h-11 rounded-full border-2 border-red-600 object-cover shadow-lg"
-              />
-              {!isPartnerRevealed && (
-                <div className="absolute -bottom-1 -right-1 bg-red-600 text-white rounded-full p-1 text-[8px]">
-                  <i className="fas fa-user-ninja"></i>
+              {/* Modal Header */}
+              <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+                <div className="flex items-center space-x-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center text-base font-bold shadow-xs">
+                    <i className="fas fa-user-plus"></i>
+                  </div>
+                  <div>
+                    <h3 className="font-black text-sm text-gray-900">Tambah Kontak Baru</h3>
+                    <p className="text-[11px] text-gray-400 font-medium">Pakai Nomor Seri orang lain (ala nomor WA)</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsAddContactOpen(false)}
+                  disabled={addContactLoading}
+                  className="w-8 h-8 rounded-full hover:bg-gray-100 text-gray-400 hover:text-black flex items-center justify-center transition-colors"
+                >
+                  <i className="fas fa-times"></i>
+                </button>
+              </div>
+
+              {/* Step 1: Input Serial Code */}
+              <div className="space-y-2">
+                <label className="block text-[11px] font-black uppercase tracking-wider text-gray-700">
+                  Nomor Seri Pengguna <span className="text-red-500">*</span>
+                </label>
+                <div className="flex items-center space-x-2">
+                  <div className="relative flex-1">
+                    <i className="fas fa-id-badge absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+                    <input
+                      type="text"
+                      placeholder="Misal: ORB-123456 atau VMS-..."
+                      value={addContactSerial}
+                      onChange={(e) => {
+                        setAddContactSerial(e.target.value.toUpperCase());
+                        setAddContactError('');
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleSearchSerial(addContactSerial);
+                        }
+                      }}
+                      className="w-full pl-9 pr-3 py-2.5 bg-gray-50 border border-gray-200 rounded-2xl text-xs font-mono font-bold uppercase tracking-wider focus:outline-none focus:border-emerald-600 transition-all"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleSearchSerial(addContactSerial)}
+                    disabled={addContactLoading || !addContactSerial.trim()}
+                    className="px-4 py-2.5 bg-black hover:bg-neutral-800 disabled:opacity-40 text-white rounded-2xl text-xs font-black transition-all active:scale-95 shadow-xs shrink-0 flex items-center space-x-1.5 cursor-pointer"
+                  >
+                    {addContactLoading ? (
+                      <i className="fas fa-spinner fa-spin text-xs"></i>
+                    ) : (
+                      <>
+                        <i className="fas fa-search text-xs"></i>
+                        <span>Cari</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                <p className="text-[10px] text-gray-400">
+                  Minta teman Anda memberikan Nomor Seri yang tertera di menu profil atau bagian atas tab Direct Chat mereka.
+                </p>
+              </div>
+
+              {/* Error Message */}
+              {addContactError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-red-600 text-xs font-medium flex items-center space-x-2 animate-shake">
+                  <i className="fas fa-circle-exclamation shrink-0 text-sm"></i>
+                  <span>{addContactError}</span>
                 </div>
               )}
-            </div>
-            <div>
-              <h3 
-                className={`font-black text-sm uppercase tracking-tight ${isPartnerRevealed ? 'hover:underline cursor-pointer text-white' : 'text-red-400'}`}
-                onClick={() => {
-                  if (isPartnerRevealed && partnerUid) {
-                    onUserClick(partnerUid);
-                  }
-                }}
-              >
-                {displayName}
-              </h3>
-              <p className="text-[9px] font-bold uppercase tracking-widest text-zinc-400">
-                {isPartnerRevealed ? '🔓 Profil Terungkap' : '🕵️ Identitas Disembunyikan'}
-              </p>
-            </div>
-          </div>
 
-          <div className="flex items-center space-x-2">
-            {!isPartnerRevealed && partnerUid && (
-              <button
-                onClick={() => handleFollowAndReveal(partnerUid)}
-                className="bg-red-600 hover:bg-red-500 text-white text-[10px] font-black uppercase px-3 py-1.5 rounded-full shadow-lg flex items-center space-x-1.5 animate-pulse active:scale-95 transition-all"
-              >
-                <i className="fas fa-user-plus text-[9px]"></i>
-                <span>Follow & Ungkap</span>
-              </button>
-            )}
-            <button
-              onClick={handleNextMatch}
-              className="bg-zinc-800 hover:bg-zinc-700 text-white text-[10px] font-black uppercase px-3 py-1.5 rounded-full border border-white/10 transition-all flex items-center space-x-1"
-              title="Cari Partner Lain"
-            >
-              <i className="fas fa-rotate"></i>
-              <span className="hidden sm:inline">Cari Lain</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Message List */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-zinc-950/90 scroll-smooth">
-          <div className="text-center py-3 px-4 bg-zinc-900/80 border border-white/10 rounded-2xl text-[11px] font-bold text-zinc-400 max-w-sm mx-auto space-y-1 shadow-inner">
-            <p className="text-red-400 uppercase font-black tracking-wider">🔒 Obrolan Anonim Aktif</p>
-            <p>Saling berkirim pesan secara bebas! Tekan <span className="text-white font-black">Follow & Ungkap</span> jika Anda ingin saling melihat foto dan nama profil asli.</p>
-          </div>
-
-          {anonMessages.map((m) => {
-            const isMe = m.senderId === currentUser?.id;
-            return (
-              <div key={m.id} className={`flex flex-col group relative ${isMe ? 'items-end' : 'items-start animate-fade-in'}`}>
-                <span className="text-[8px] font-black uppercase tracking-widest mb-1 px-1 text-zinc-500">
-                  {isMe ? 'Anda' : displayName}
-                </span>
-                <div className="flex items-center space-x-1.5 max-w-[85%]">
-                  {isMe && (
-                    <button
-                      onClick={(e) => handleDeleteAnonMessageForMe(m.id, e)}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-red-400 p-1 text-[11px]"
-                      title="Hapus untuk Saya"
-                    >
-                      <i className="fas fa-trash-can"></i>
-                    </button>
-                  )}
-                  <div className={`p-4 rounded-3xl text-sm font-medium shadow-md whitespace-pre-wrap break-words leading-relaxed ${
-                    isMe 
-                      ? 'bg-red-600 text-white rounded-br-none' 
-                      : 'bg-zinc-800 border border-white/10 text-white rounded-bl-none'
-                  }`}>
-                    {m.text}
+              {/* Step 2: User Found Preview & Custom Contact Name Input */}
+              {searchedContactUser && (
+                <div className="space-y-4 pt-1 animate-fade-in">
+                  {/* Profile Preview Card */}
+                  <div className="p-3 bg-emerald-50/60 border border-emerald-200 rounded-2xl flex items-center space-x-3">
+                    <img
+                      src={searchedContactUser.photoURL}
+                      alt={searchedContactUser.name}
+                      className="w-12 h-12 rounded-full object-cover border border-emerald-300 bg-white shrink-0 shadow-xs"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center space-x-1.5">
+                        <p className="font-mono font-black text-xs text-black tracking-wider">
+                          {searchedContactUser.serialCode || ('ORB-' + searchedContactUser.id.substring(0, 6).toUpperCase())}
+                        </p>
+                        {searchedContactUser.isVerified && (
+                          <span className="text-blue-500 text-xs" title="Akun Terverifikasi">
+                            <i className="fas fa-circle-check"></i>
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs font-bold text-gray-900 truncate">@{searchedContactUser.name}</p>
+                      {searchedContactUser.bio && (
+                        <p className="text-[10px] text-gray-500 truncate italic">"{searchedContactUser.bio}"</p>
+                      )}
+                    </div>
                   </div>
-                  {!isMe && (
-                    <button
-                      onClick={(e) => handleDeleteAnonMessageForMe(m.id, e)}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-red-400 p-1 text-[11px]"
-                      title="Hapus untuk Saya"
-                    >
-                      <i className="fas fa-trash-can"></i>
-                    </button>
-                  )}
+
+                  {/* Custom Contact Name Input */}
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-black uppercase tracking-wider text-gray-700">
+                      Beri Nama Kontak (Bebas sesuai keinginan Anda) <span className="text-red-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <i className="fas fa-pen-fancy absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+                      <input
+                        type="text"
+                        placeholder="Contoh: Ibu, Andi Futsal, Budi Tetangga, dll..."
+                        value={addContactCustomName}
+                        onChange={(e) => setAddContactCustomName(e.target.value)}
+                        className="w-full pl-9 pr-3 py-2.5 bg-white border border-gray-300 rounded-2xl text-xs font-bold focus:outline-none focus:border-emerald-600 transition-all shadow-xs"
+                      />
+                    </div>
+                    <p className="text-[10px] text-gray-400">
+                      Nama ini hanya akan terlihat oleh Anda, persis seperti menyimpan kontak di WhatsApp. Anda bisa mengubahnya kapan saja.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Success Message */}
+              {addContactSuccess && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-800 text-xs font-bold flex items-center justify-between animate-fade-in">
+                  <div className="flex items-center space-x-2">
+                    <i className="fas fa-circle-check text-emerald-600 text-sm"></i>
+                    <span>{addContactSuccess}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Modal Actions */}
+              <div className="flex items-center space-x-2 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setIsAddContactOpen(false)}
+                  disabled={addContactLoading}
+                  className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-2xl transition-colors cursor-pointer"
+                >
+                  Tutup
+                </button>
+                {searchedContactUser && !addContactSuccess && (
+                  <button
+                    type="button"
+                    onClick={handleSaveContact}
+                    disabled={addContactLoading || !addContactCustomName.trim()}
+                    className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-40 text-white text-xs font-black rounded-2xl transition-all shadow-md flex items-center justify-center space-x-1.5 cursor-pointer"
+                  >
+                    {addContactLoading ? (
+                      <i className="fas fa-spinner fa-spin text-xs"></i>
+                    ) : (
+                      <>
+                        <i className="fas fa-check text-xs"></i>
+                        <span>Simpan Kontak</span>
+                      </>
+                    )}
+                  </button>
+                )}
+                {addContactSuccess && searchedContactUser && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddContactOpen(false);
+                      setSelectedRecipient({ type: 'user', data: searchedContactUser });
+                    }}
+                    className="flex-1 py-2.5 bg-black hover:bg-neutral-800 text-white text-xs font-black rounded-2xl transition-all shadow-md flex items-center justify-center space-x-1.5 cursor-pointer"
+                  >
+                    <i className="fas fa-comment text-yellow-400 text-xs"></i>
+                    <span>Mulai Chat Sekarang</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* EDIT CONTACT NAME MODAL */}
+        {isEditContactOpen && editingContact && (
+          <div 
+            className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in"
+            onClick={() => {
+              if (!editContactLoading) setIsEditContactOpen(false);
+            }}
+          >
+            <div 
+              className="bg-white rounded-3xl w-full max-w-md p-6 shadow-2xl border border-black/10 animate-scale-up space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+                <div className="flex items-center space-x-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-gray-100 text-black flex items-center justify-center text-base font-bold shadow-xs">
+                    <i className="fas fa-pen-to-square"></i>
+                  </div>
+                  <div>
+                    <h3 className="font-black text-sm text-gray-900">Ganti Nama Kontak</h3>
+                    <p className="text-[11px] text-gray-400 font-medium">Ubah nama panggilan untuk kontak ini</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsEditContactOpen(false)}
+                  disabled={editContactLoading}
+                  className="w-8 h-8 rounded-full hover:bg-gray-100 text-gray-400 hover:text-black flex items-center justify-center transition-colors"
+                >
+                  <i className="fas fa-times"></i>
+                </button>
+              </div>
+
+              {/* User Target Info */}
+              <div className="p-3 bg-gray-50 border border-gray-200 rounded-2xl flex items-center space-x-3">
+                <img
+                  src={editingContact.user?.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${editingContact.contactUserId}&backgroundColor=000000`}
+                  alt={editingContact.currentCustomName}
+                  className="w-11 h-11 rounded-full object-cover border border-black/10 bg-white shrink-0"
+                />
+                <div className="min-w-0 flex-1 text-xs">
+                  <p className="font-mono font-bold text-gray-500">
+                    {editingContact.user?.serialCode || ('ORB-' + editingContact.contactUserId.substring(0, 6).toUpperCase())}
+                  </p>
+                  <p className="text-gray-900 font-extrabold truncate">
+                    Akun: @{editingContact.user?.name || 'Orbit Member'}
+                  </p>
+                  <p className="text-[10px] text-gray-400">
+                    Nama saat ini: <span className="font-bold text-gray-700">"{editingContact.currentCustomName}"</span>
+                  </p>
                 </div>
               </div>
-            );
-          })}
-        </div>
 
-        {/* Bottom Input */}
-        <form onSubmit={handleSendAnonMessage} className="p-3 bg-zinc-900 border-t border-white/10 flex items-center space-x-2">
-          <div className="flex-1 min-w-0 flex items-center bg-zinc-800 border border-white/10 rounded-2xl px-4 py-1.5 focus-within:border-red-500 transition-all">
-            <textarea
-              ref={anonTextareaRef}
-              rows={1}
-              value={anonInputMsg}
-              onChange={(e) => setAnonInputMsg(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  if (isMobileDevice()) {
-                    // On mobile/HP: Enter creates a new line, send via send button
-                    return;
-                  }
-                  if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
-                    e.preventDefault();
-                    handleSendAnonMessage(e);
-                  }
-                }
-              }}
-              placeholder={isMobileDevice() ? "Tulis pesan rahasia anonim..." : "Tulis pesan rahasia anonim... (Shift+Enter baris baru)"}
-              className="w-full bg-transparent text-white text-xs focus:outline-none resize-none leading-relaxed max-h-24 placeholder:text-zinc-500 py-1"
-              style={{ minHeight: '24px' }}
-            />
+              {/* Input New Name */}
+              <div className="space-y-1.5">
+                <label className="block text-[11px] font-black uppercase tracking-wider text-gray-700">
+                  Nama Kontak Baru <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <i className="fas fa-pen absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+                  <input
+                    type="text"
+                    placeholder="Masukkan nama kontak baru..."
+                    value={editContactNewName}
+                    onChange={(e) => setEditContactNewName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleUpdateContactName();
+                      }
+                    }}
+                    autoFocus
+                    className="w-full pl-9 pr-3 py-2.5 bg-white border border-gray-300 rounded-2xl text-xs font-bold focus:outline-none focus:border-emerald-600 transition-all shadow-xs"
+                  />
+                </div>
+                <p className="text-[10px] text-gray-400">
+                  Nama ini hanya terlihat di buku kontak dan obrolan Anda pribadi.
+                </p>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center space-x-2 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setIsEditContactOpen(false)}
+                  disabled={editContactLoading}
+                  className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-2xl transition-colors cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUpdateContactName}
+                  disabled={editContactLoading || !editContactNewName.trim() || editContactNewName.trim() === editingContact.currentCustomName}
+                  className="flex-1 py-2.5 bg-black hover:bg-neutral-800 disabled:opacity-40 text-white text-xs font-black rounded-2xl transition-all shadow-md flex items-center justify-center space-x-1.5 active:scale-95 cursor-pointer"
+                >
+                  {editContactLoading ? (
+                    <i className="fas fa-spinner fa-spin text-xs"></i>
+                  ) : (
+                    <>
+                      <i className="fas fa-check text-xs text-yellow-400"></i>
+                      <span>Simpan Nama Baru</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
-          <button
-            type="submit"
-            disabled={!anonInputMsg.trim()}
-            className="w-11 h-11 bg-red-600 hover:bg-red-500 text-white rounded-full flex items-center justify-center transition-all shadow-lg disabled:opacity-30 active:scale-95 shrink-0"
-            title="Kirim Pesan Anonim"
+        )}
+        {/* UNLOCK USER WITH SERIAL CODE MODAL */}
+        {unlockUserModal && (
+          <div 
+            className="fixed inset-0 z-[125] bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in"
+            onClick={() => {
+              if (!unlockLoading) {
+                setUnlockUserModal(null);
+                setUnlockError('');
+                setUnlockSerialInput('');
+              }
+            }}
           >
-            <i className="fas fa-paper-plane text-xs"></i>
-          </button>
-        </form>
-      </div>
+            <div 
+              className="bg-white rounded-3xl w-full max-w-md p-6 shadow-2xl border-2 border-black animate-scale-up space-y-4 text-left"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+                <div className="flex items-center space-x-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-500 text-white flex items-center justify-center text-base font-bold shadow-xs">
+                    <i className="fas fa-key"></i>
+                  </div>
+                  <div>
+                    <h3 className="font-black text-sm text-gray-900">Buka Obrolan</h3>
+                    <p className="text-[11px] text-gray-500 font-medium">Verifikasi nomor seri untuk mulai chat</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUnlockUserModal(null);
+                    setUnlockError('');
+                    setUnlockSerialInput('');
+                  }}
+                  disabled={unlockLoading}
+                  className="w-8 h-8 rounded-full hover:bg-gray-100 text-gray-400 hover:text-black flex items-center justify-center transition-colors cursor-pointer"
+                >
+                  <i className="fas fa-times"></i>
+                </button>
+              </div>
+
+              {/* Target User Info */}
+              <div className="p-3 bg-neutral-50 border border-neutral-200 rounded-2xl flex items-center space-x-3">
+                <img
+                  src={unlockUserModal.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${unlockUserModal.id}&backgroundColor=000000`}
+                  alt={unlockUserModal.name}
+                  className="w-11 h-11 rounded-full object-cover border border-black/10 bg-white shrink-0"
+                />
+                <div className="min-w-0 flex-1 text-xs">
+                  <div className="flex items-center space-x-1.5">
+                    <span className="font-black text-gray-900 truncate">@{unlockUserModal.name}</span>
+                    {unlockUserModal.isVerified && (
+                      <span className="text-blue-500 text-xs shrink-0"><i className="fas fa-circle-check"></i></span>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-neutral-500 line-clamp-1 mt-0.5">
+                    {unlockUserModal.bio || 'Pengguna Vimos'}
+                  </p>
+                  <div className="mt-1 flex items-center space-x-1 text-[9px] font-bold text-amber-800 bg-amber-100/70 border border-amber-300 px-1.5 py-0.5 rounded w-fit">
+                    <i className="fas fa-lock text-[8px]"></i>
+                    <span>Nomor Seri Diperlukan</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Form */}
+              <form onSubmit={handleSubmitUnlock} className="space-y-3.5">
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-black uppercase tracking-wider text-gray-700">
+                    Nomor Seri Pemilik Akun <span className="text-red-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <i className="fas fa-id-badge absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+                    <input
+                      type="text"
+                      required
+                      autoFocus
+                      placeholder="Misal: ORB-123456"
+                      value={unlockSerialInput}
+                      onChange={(e) => {
+                        setUnlockSerialInput(e.target.value.toUpperCase());
+                        setUnlockError('');
+                      }}
+                      className="w-full pl-9 pr-3 py-2.5 bg-white border-2 border-neutral-300 focus:border-black rounded-2xl text-xs font-mono font-bold uppercase tracking-wider focus:outline-none transition-all placeholder:font-sans placeholder:tracking-normal placeholder:text-gray-400"
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-400 leading-relaxed">
+                    Anda tidak bisa chat pengguna yang nomor serinya belum Anda miliki. Minta nomor seri kepada <strong>@{unlockUserModal.name}</strong> untuk membuka obrolan.
+                  </p>
+                </div>
+
+                {/* Custom Contact Name */}
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-black uppercase tracking-wider text-gray-700">
+                    Simpan Sebagai Kontak (Nama Panggilan)
+                  </label>
+                  <div className="relative">
+                    <i className="fas fa-user-pen absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+                    <input
+                      type="text"
+                      placeholder="Contoh: Teman Kerja, Saudara..."
+                      value={unlockCustomName}
+                      onChange={(e) => setUnlockCustomName(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2.5 bg-white border border-neutral-300 focus:border-black rounded-2xl text-xs font-bold focus:outline-none transition-all"
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-400">
+                    Nama ini akan disimpan di daftar kontak Anda agar Anda selalu bisa saling chat kapan saja.
+                  </p>
+                </div>
+
+                {/* Error message */}
+                {unlockError && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-red-600 text-xs font-bold flex items-center space-x-2 animate-shake">
+                    <i className="fas fa-circle-exclamation shrink-0 text-sm"></i>
+                    <span>{unlockError}</span>
+                  </div>
+                )}
+
+                <div className="pt-2 flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUnlockUserModal(null);
+                      setUnlockError('');
+                      setUnlockSerialInput('');
+                    }}
+                    disabled={unlockLoading}
+                    className="flex-1 py-2.5 border-2 border-neutral-200 hover:border-black text-gray-700 text-xs font-black rounded-2xl transition-all cursor-pointer"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={unlockLoading || !unlockSerialInput.trim()}
+                    className="flex-1 py-2.5 bg-black hover:bg-neutral-800 disabled:opacity-40 text-white text-xs font-black rounded-2xl transition-all shadow-md flex items-center justify-center space-x-1.5 cursor-pointer"
+                  >
+                    {unlockLoading ? (
+                      <i className="fas fa-spinner fa-spin text-xs"></i>
+                    ) : (
+                      <>
+                        <i className="fas fa-key text-amber-400 text-xs"></i>
+                        <span>Verifikasi &amp; Buka Chat</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+      </>
     );
-  }
+  };
 
   const handleOpenCollectiveGroup = (g: Group) => {
     if (!currentUser) return;
@@ -1705,23 +2087,8 @@ const Chat: React.FC<ChatProps> = ({
           </div>
         )}
 
-        {/* 5 Tabs: AI Bot, Direct, Obrolan Toko, Collectives, Anonymous Match */}
+        {/* 4 Tabs: Direct, Kontak (WhatsApp style), Obrolan Toko, Collectives */}
         <div className="flex border-b-2 border-black/5 mb-6 overflow-x-auto scrollbar-none">
-          <button 
-            onClick={() => setActiveTab('hengkur_ai')}
-            className={`flex-1 min-w-[110px] py-3 text-[10px] font-black uppercase tracking-[0.1em] transition-all border-b-2 flex items-center justify-center space-x-1.5 ${
-              activeTab === 'hengkur_ai' ? 'border-emerald-500 text-emerald-600 font-extrabold' : 'border-transparent text-gray-400 hover:text-gray-700'
-            }`}
-          >
-            {botAvatar ? (
-              <img src={botAvatar} alt={botName} className="w-4 h-4 rounded-full object-cover ring-1 ring-emerald-400" />
-            ) : (
-              <i className="fas fa-robot text-emerald-500 text-xs animate-pulse"></i>
-            )}
-            <span className="truncate max-w-[90px]">{botName}</span>
-            <span className="bg-emerald-100 text-emerald-700 text-[8px] font-black px-1.5 py-0.5 rounded-full">AI</span>
-          </button>
-
           <button 
             onClick={() => setActiveTab('direct')}
             className={`flex-1 min-w-[70px] py-3 text-[10px] font-black uppercase tracking-[0.1em] transition-all border-b-2 ${
@@ -1729,6 +2096,16 @@ const Chat: React.FC<ChatProps> = ({
             }`}
           >
             Direct
+          </button>
+
+          <button 
+            onClick={() => setActiveTab('contacts')}
+            className={`flex-1 min-w-[90px] py-3 text-[10px] font-black uppercase tracking-[0.1em] transition-all border-b-2 flex items-center justify-center space-x-1.5 ${
+              activeTab === 'contacts' ? 'border-emerald-600 text-emerald-700 font-extrabold' : 'border-transparent text-gray-400'
+            }`}
+          >
+            <i className="fas fa-address-book text-xs"></i>
+            <span>Kontak ({Object.keys(savedContacts).length})</span>
           </button>
 
           <button 
@@ -1749,37 +2126,80 @@ const Chat: React.FC<ChatProps> = ({
           >
             Collectives
           </button>
-
-          <button 
-            onClick={() => setActiveTab('anonymous')}
-            className={`flex-1 min-w-[90px] py-3 text-[10px] font-black uppercase tracking-[0.1em] transition-all border-b-2 flex items-center justify-center space-x-1 ${
-              activeTab === 'anonymous' ? 'border-red-600 text-red-600' : 'border-transparent text-gray-400'
-            }`}
-          >
-            <i className="fas fa-user-ninja text-xs"></i>
-            <span>{t('anon_match')}</span>
-          </button>
         </div>
 
-        <div className="space-y-4 flex-1 overflow-y-auto pr-1">
-          {activeTab === 'hengkur_ai' && (
-            <div className="h-full min-h-[460px] flex flex-col -mx-2 sm:mx-0">
-              <HengkurAIChat 
-                currentUser={currentUser} 
-                onBotNameChange={(name) => setBotName(name)}
-                onBotAvatarChange={(avatar) => setBotAvatar(avatar)}
-              />
-            </div>
-          )}
+        <div className="space-y-4 flex-1 min-h-0 overflow-y-auto pr-1">
 
           {activeTab === 'direct' && (
             <div className="space-y-4">
-              {/* Search Bar for Direct Messages & Contacts */}
+              {/* User's Own Serial Code Card */}
+              <div className="p-3.5 bg-neutral-900 text-white rounded-2xl flex items-center justify-between shadow-xs border border-neutral-800">
+                <div className="flex items-center space-x-3">
+                  <div className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center font-mono text-xs font-bold text-yellow-400">
+                    <i className="fas fa-id-badge text-base"></i>
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-neutral-400">Nomor Seri Anda (Bagikan seperti no. WA)</p>
+                    <div className="flex items-center space-x-1.5">
+                      <p className="font-mono font-black text-sm tracking-wider text-white">
+                        {currentUser?.serialCode || ('ORB-' + (currentUser?.id?.substring(0, 6).toUpperCase() || '000000'))}
+                      </p>
+                      {currentUser?.isVerified && (
+                        <span className="text-blue-400 text-xs" title="Akun Terverifikasi">
+                          <i className="fas fa-circle-check"></i>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <button 
+                  type="button"
+                  onClick={() => {
+                    const code = currentUser?.serialCode || ('ORB-' + (currentUser?.id?.substring(0, 6).toUpperCase() || '000000'));
+                    navigator.clipboard?.writeText(code);
+                    alert(`Nomor Seri Anda (${code}) berhasil disalin! Bagikan ke teman agar mereka bisa menyimpan kontak Anda.`);
+                  }}
+                  className="px-3 py-1.5 bg-white/10 hover:bg-white/20 active:scale-95 rounded-xl text-[10px] font-black uppercase tracking-wider text-white transition-all flex items-center space-x-1.5 cursor-pointer"
+                  title="Salin Nomor Seri"
+                >
+                  <i className="fas fa-copy text-xs"></i>
+                  <span>Salin</span>
+                </button>
+              </div>
+
+              {/* Quick Actions: Tambah Kontak & Akses Buku Kontak */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAddContactSerial('');
+                    setAddContactCustomName('');
+                    setSearchedContactUser(null);
+                    setAddContactError('');
+                    setAddContactSuccess('');
+                    setIsAddContactOpen(true);
+                  }}
+                  className="py-2.5 px-3 bg-black text-white hover:bg-neutral-800 active:scale-95 rounded-2xl text-xs font-black uppercase tracking-wider flex items-center justify-center space-x-2 transition-all shadow-xs cursor-pointer"
+                >
+                  <i className="fas fa-user-plus text-xs text-yellow-400"></i>
+                  <span>+ Tambah Kontak</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('contacts')}
+                  className="py-2.5 px-3 bg-gray-100 hover:bg-gray-200 text-black active:scale-95 rounded-2xl text-xs font-black uppercase tracking-wider flex items-center justify-center space-x-2 transition-all cursor-pointer"
+                >
+                  <i className="fas fa-address-book text-xs text-emerald-600"></i>
+                  <span>Buku Kontak ({Object.keys(savedContacts).length})</span>
+                </button>
+              </div>
+
+              {/* Search Bar for Direct Messages & Contacts by Serial Code or Name */}
               <div className="relative">
                 <i className="fas fa-search absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
                 <input
                   type="text"
-                  placeholder="Cari percakapan atau nama pengguna..."
+                  placeholder="Cari nama kontak, nomor seri (ORB-...), atau pesan..."
                   value={directSearchQuery}
                   onChange={(e) => setDirectSearchQuery(e.target.value)}
                   className="w-full pl-9 pr-8 py-2.5 bg-gray-50 border border-black/10 rounded-2xl text-xs focus:outline-none focus:border-black transition-all"
@@ -1794,55 +2214,23 @@ const Chat: React.FC<ChatProps> = ({
                 )}
               </div>
 
-              {/* Pinned AI Bot Assistant Card */}
-              <div 
-                onClick={() => setActiveTab('hengkur_ai')}
-                className="flex items-center border-2 border-emerald-500/40 bg-gradient-to-r from-emerald-50/80 via-teal-50/40 to-white rounded-2xl hover:border-emerald-500 transition-all p-3.5 shadow-xs cursor-pointer group hover:scale-[1.01]"
-              >
-                <div className="relative mr-3.5 shrink-0">
-                  {botAvatar ? (
-                    <img 
-                      src={botAvatar} 
-                      alt={botName}
-                      className="w-12 h-12 rounded-2xl object-cover shadow-md ring-2 ring-emerald-400/60"
-                    />
-                  ) : (
-                    <div className="w-12 h-12 rounded-2xl bg-black text-white flex items-center justify-center shadow-md ring-2 ring-emerald-400/50">
-                      <i className="fas fa-robot text-lg text-emerald-400"></i>
-                    </div>
-                  )}
-                  <span className="absolute -bottom-1 -right-1 w-3.5 h-3.5 bg-emerald-500 border-2 border-white rounded-full flex items-center justify-center">
-                    <span className="w-1.5 h-1.5 bg-white rounded-full animate-ping"></span>
-                  </span>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center space-x-1.5">
-                    <p className="font-black text-sm uppercase text-neutral-900 truncate">{botName}</p>
-                    <span className="bg-emerald-600 text-white text-[8px] font-black px-1.5 py-0.5 rounded-md flex items-center space-x-1 shrink-0">
-                      <i className="fas fa-sparkles text-[7px] text-yellow-300"></i>
-                      <span>ASISTEN AI</span>
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-neutral-600 font-bold truncate mt-0.5">Tanya ide caption, musik, konten viral, coding, atau ngobrol...</p>
-                </div>
-                <div className="flex items-center space-x-1 pl-2 shrink-0">
-                  <span className="text-[10px] font-black text-emerald-600 bg-emerald-100 px-2 py-1 rounded-xl hidden sm:inline">Buka AI</span>
-                  <i className="fas fa-chevron-right text-neutral-400 group-hover:text-black group-hover:translate-x-0.5 transition-all text-xs"></i>
-                </div>
-              </div>
-
               {/* FILTERED OR ACTIVE CONVERSATIONS */}
               {(() => {
                 const query = directSearchQuery.toLowerCase().trim();
-                const filteredThreads = directChatThreads.filter(t => 
-                  t.otherUser.name.toLowerCase().includes(query) ||
-                  t.lastMessage.toLowerCase().includes(query)
-                );
+                const filteredThreads = directChatThreads.filter(t => {
+                  const serial = (t.otherUser.serialCode || ('orb-' + t.otherUser.id.substring(0, 6))).toLowerCase();
+                  const name = (t.otherUser.name || '').toLowerCase();
+                  const savedName = (savedContacts[t.otherUser.id]?.customName || '').toLowerCase();
+                  return serial.includes(query) || name.includes(query) || savedName.includes(query) || t.lastMessage.toLowerCase().includes(query);
+                });
 
                 const existingChatUserIds = new Set(directChatThreads.map(t => t.otherUser.id));
                 const searchedOtherUsers = query 
                   ? users.filter(u => u.id !== currentUser?.id && !existingChatUserIds.has(u.id) && (
-                      u.name.toLowerCase().includes(query) ||
+                      (u.serialCode && u.serialCode.toLowerCase().includes(query)) ||
+                      (u.name && u.name.toLowerCase().includes(query)) ||
+                      (savedContacts[u.id]?.customName && savedContacts[u.id].customName.toLowerCase().includes(query)) ||
+                      ('orb-' + u.id.toLowerCase()).includes(query) ||
                       (u.bio && u.bio.toLowerCase().includes(query))
                     ))
                   : [];
@@ -1865,6 +2253,11 @@ const Chat: React.FC<ChatProps> = ({
                           {filteredThreads.map(thread => {
                             const isMeLastSender = thread.lastMessageSenderId === currentUser?.id;
                             const hasUnread = thread.unreadCount > 0;
+                            const serialCode = thread.otherUser.serialCode || ('ORB-' + thread.otherUser.id.substring(0, 6).toUpperCase());
+                            const isSavedContact = Boolean(savedContacts[thread.otherUser.id]);
+                            const isSharedGroup = isSharedGroupMember(currentUser?.id, thread.otherUser.id, groups);
+                            const canSeeSerial = isSavedContact || isSharedGroup;
+                            const contactDisplayName = savedContacts[thread.otherUser.id]?.customName || thread.otherUser.name;
 
                             return (
                               <div
@@ -1896,9 +2289,20 @@ const Chat: React.FC<ChatProps> = ({
                                 <div className="flex-1 min-w-0">
                                   <div className="flex items-center justify-between mb-0.5">
                                     <div className="flex items-center space-x-1.5 truncate">
-                                      <p className={`text-sm truncate ${hasUnread ? 'font-black text-black' : 'font-bold text-gray-900'}`}>
-                                        {thread.otherUser.name}
+                                      {/* WhatsApp Style Contact Display */}
+                                      <p className="font-extrabold text-sm text-black truncate flex items-center space-x-1">
+                                        <span>{contactDisplayName}</span>
+                                        {isSavedContact && (
+                                          <span className="text-emerald-600 text-[10px]" title="Kontak Tersimpan">
+                                            <i className="fas fa-address-book"></i>
+                                          </span>
+                                        )}
                                       </p>
+                                      {thread.otherUser.isVerified && (
+                                        <span className="text-blue-500 text-xs shrink-0" title="Akun Terverifikasi">
+                                          <i className="fas fa-circle-check"></i>
+                                        </span>
+                                      )}
                                       {thread.otherUser.role && (
                                         <span 
                                           className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded-md text-white shrink-0"
@@ -1918,6 +2322,35 @@ const Chat: React.FC<ChatProps> = ({
                                     </span>
                                   </div>
 
+                                  {/* Subtitle with Serial Code & Username */}
+                                  <div className="flex items-center justify-between mb-1">
+                                    <div className="flex items-center space-x-1 text-[10px] text-gray-400 font-medium truncate">
+                                      {canSeeSerial ? (
+                                        <>
+                                          <span className="font-mono font-bold text-gray-500">{serialCode}</span>
+                                          <span>•</span>
+                                          <span className="truncate">@{thread.otherUser.name}</span>
+                                        </>
+                                      ) : (
+                                        <span className="truncate font-semibold text-gray-500">@{thread.otherUser.name}</span>
+                                      )}
+                                    </div>
+                                    {!isSavedContact && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleQuickAddContact(thread.otherUser);
+                                        }}
+                                        className="text-[9px] font-black px-2 py-0.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-full transition-all flex items-center space-x-1 shrink-0 ml-2"
+                                        title="Simpan ke Kontak"
+                                      >
+                                        <i className="fas fa-user-plus text-[8px]"></i>
+                                        <span>+ Simpan</span>
+                                      </button>
+                                    )}
+                                  </div>
+
                                   <div className="flex items-center justify-between">
                                     <p className={`text-xs truncate pr-2 ${hasUnread ? 'font-bold text-gray-900' : 'text-gray-500'}`}>
                                       {isMeLastSender && <span className="text-gray-400 font-medium">Anda: </span>}
@@ -1931,14 +2364,29 @@ const Chat: React.FC<ChatProps> = ({
                                   </div>
                                 </div>
 
-                                {/* Clear Chat button */}
-                                <button
-                                  onClick={(e) => handleClearDirectUserChat(thread.otherUser.id, e)}
-                                  className="p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-full text-xs transition-colors ml-2 shrink-0"
-                                  title="Hapus riwayat obrolan"
-                                >
-                                  <i className="fas fa-trash-can"></i>
-                                </button>
+                                {/* Action Buttons: Edit Name if contact, Clear Chat */}
+                                <div className="flex items-center space-x-1 ml-2 shrink-0">
+                                  {isSavedContact && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenEditContact(thread.otherUser.id, contactDisplayName, thread.otherUser);
+                                      }}
+                                      className="p-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-full text-xs transition-colors"
+                                      title="Ganti Nama Kontak"
+                                    >
+                                      <i className="fas fa-pen text-[10px]"></i>
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={(e) => handleClearDirectUserChat(thread.otherUser.id, e)}
+                                    className="p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-full text-xs transition-colors"
+                                    title="Hapus riwayat obrolan"
+                                  >
+                                    <i className="fas fa-trash-can text-[10px]"></i>
+                                  </button>
+                                </div>
                               </div>
                             );
                           })}
@@ -1949,7 +2397,7 @@ const Chat: React.FC<ChatProps> = ({
                     {/* If search returns no threads & no new users */}
                     {query && filteredThreads.length === 0 && searchedOtherUsers.length === 0 && (
                       <div className="text-center py-12 text-gray-400 text-xs italic bg-white rounded-2xl border border-dashed border-gray-200 p-6">
-                        Tidak ada percakapan atau pengguna yang cocok dengan "{directSearchQuery}".
+                        Tidak ada percakapan atau pengguna dengan kode seri / nama "{directSearchQuery}".
                       </div>
                     )}
 
@@ -1957,40 +2405,80 @@ const Chat: React.FC<ChatProps> = ({
                     {searchedOtherUsers.length > 0 && (
                       <div className="space-y-2 pt-2">
                         <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 px-1">
-                          Mulai Obrolan Baru
+                          Mulai Obrolan Baru Berdasarkan Kode Seri
                         </p>
                         <div className="space-y-2">
-                          {searchedOtherUsers.slice(0, 10).map(u => (
-                            <div
-                              key={u.id}
-                              className="flex items-center justify-between p-3 rounded-2xl bg-white border border-black/5 hover:border-black transition-all shadow-xs"
-                            >
-                              <div 
-                                className="flex items-center space-x-3 min-w-0 flex-1 cursor-pointer"
-                                onClick={() => setSelectedRecipient({ type: 'user', data: u })}
+                          {searchedOtherUsers.slice(0, 10).map(u => {
+                            const uSerial = u.serialCode || ('ORB-' + u.id.substring(0, 6).toUpperCase());
+                            const canSeeSerial = Boolean(savedContacts[u.id]) || isSharedGroupMember(currentUser?.id, u.id, groups);
+                            return (
+                              <div
+                                key={u.id}
+                                className="flex items-center justify-between p-3 rounded-2xl bg-white border border-black/5 hover:border-black transition-all shadow-xs"
                               >
-                                <img
-                                  src={u.photoURL}
-                                  alt={u.name}
-                                  className="w-10 h-10 rounded-full object-cover border border-black/10"
+                                <div 
+                                  className="flex items-center space-x-3 min-w-0 flex-1 cursor-pointer"
+                                  onClick={() => {
+                                    if (!canSeeSerial) {
+                                      handlePromptUnlock(u);
+                                    } else {
+                                      setSelectedRecipient({ type: 'user', data: u });
+                                    }
+                                  }}
+                                >
+                                  <img
+                                    src={u.photoURL}
+                                    alt={u.name}
+                                    className="w-10 h-10 rounded-full object-cover border border-black/10"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onUserClick(u.id);
+                                    }}
+                                  />
+                                  <div className="truncate">
+                                    <div className="flex items-center space-x-1.5">
+                                      {canSeeSerial ? (
+                                        <p className="font-mono font-black text-xs tracking-wider text-black truncate">{uSerial}</p>
+                                      ) : (
+                                        <p className="font-black text-xs text-black truncate">{u.name}</p>
+                                      )}
+                                      {u.isVerified && (
+                                        <span className="text-blue-500 text-[10px]" title="Terverifikasi">
+                                          <i className="fas fa-circle-check"></i>
+                                        </span>
+                                      )}
+                                      {!canSeeSerial && (
+                                        <span className="text-[8px] bg-amber-50 text-amber-800 border border-amber-200 font-bold px-1.5 py-0.2 rounded shrink-0 flex items-center space-x-0.5">
+                                          <i className="fas fa-lock text-[7px]"></i>
+                                          <span>Butuh Seri</span>
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-[10px] text-gray-400 truncate">@{u.name} • {u.bio || 'Orbit Member'}</p>
+                                  </div>
+                                </div>
+                                <button
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    onUserClick(u.id);
+                                    if (!canSeeSerial) {
+                                      handlePromptUnlock(u);
+                                    } else {
+                                      setSelectedRecipient({ type: 'user', data: u });
+                                    }
                                   }}
-                                />
-                                <div className="truncate">
-                                  <p className="font-bold text-xs uppercase truncate">{u.name}</p>
-                                  <p className="text-[10px] text-gray-400 truncate">{u.bio || 'Orbit Member'}</p>
-                                </div>
+                                  className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider active:scale-95 transition-all ml-2 flex items-center space-x-1 ${
+                                    canSeeSerial 
+                                      ? 'bg-black text-white hover:opacity-80' 
+                                      : 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200'
+                                  }`}
+                                  title={canSeeSerial ? "Buka Obrolan" : "Masukkan Nomor Seri untuk Mengobrol"}
+                                >
+                                  <i className={`fas ${canSeeSerial ? 'fa-comment' : 'fa-key text-[9px]'}`}></i>
+                                  <span>{canSeeSerial ? 'Chat' : 'Buka'}</span>
+                                </button>
                               </div>
-                              <button
-                                onClick={() => setSelectedRecipient({ type: 'user', data: u })}
-                                className="px-3 py-1.5 bg-black text-white rounded-full text-[10px] font-black uppercase tracking-wider hover:opacity-80 active:scale-95 transition-all ml-2"
-                              >
-                                Chat
-                              </button>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -2015,10 +2503,18 @@ const Chat: React.FC<ChatProps> = ({
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                             {(mutualFollowers.length > 0 ? mutualFollowers : users.filter(u => u.id !== currentUser?.id)).slice(0, 8).map(u => {
                               const isM = isMutual(u.id);
+                              const uSerial = u.serialCode || ('ORB-' + u.id.substring(0, 6).toUpperCase());
+                              const canSeeSerial = Boolean(savedContacts[u.id]) || isSharedGroupMember(currentUser?.id, u.id, groups);
                               return (
                                 <div 
                                   key={u.id} 
-                                  onClick={() => setSelectedRecipient({ type: 'user', data: u })}
+                                  onClick={() => {
+                                    if (!canSeeSerial) {
+                                      handlePromptUnlock(u);
+                                    } else {
+                                      setSelectedRecipient({ type: 'user', data: u });
+                                    }
+                                  }}
                                   className="flex items-center justify-between p-3 rounded-2xl bg-white border border-black/5 hover:border-black transition-all cursor-pointer shadow-xs group"
                                 >
                                   <div className="flex items-center space-x-2.5 min-w-0 flex-1">
@@ -2037,21 +2533,46 @@ const Chat: React.FC<ChatProps> = ({
                                       )}
                                     </div>
                                     <div className="min-w-0 flex-1">
-                                      <p className="font-bold text-xs uppercase truncate group-hover:text-black">{u.name}</p>
+                                      <div className="flex items-center space-x-1">
+                                        {canSeeSerial ? (
+                                          <p className="font-mono font-black text-xs tracking-wider truncate text-black">{uSerial}</p>
+                                        ) : (
+                                          <p className="font-black text-xs tracking-tight truncate text-black">{u.name}</p>
+                                        )}
+                                        {u.isVerified && (
+                                          <span className="text-blue-500 text-[9px]">
+                                            <i className="fas fa-circle-check"></i>
+                                          </span>
+                                        )}
+                                        {!canSeeSerial && (
+                                          <span className="text-[8px] bg-amber-50 text-amber-800 border border-amber-200 font-bold px-1.5 py-0.2 rounded shrink-0 flex items-center space-x-0.5">
+                                            <i className="fas fa-lock text-[7px]"></i>
+                                            <span>Butuh Seri</span>
+                                          </span>
+                                        )}
+                                      </div>
                                       <p className="text-[9px] text-gray-400 font-bold uppercase tracking-wider truncate">
-                                        {isM ? 'Saling Follow' : (u.role || 'Orbit Member')}
+                                        @{u.name} • {isM ? 'Saling Follow' : (u.role || 'Orbit Member')}
                                       </p>
                                     </div>
                                   </div>
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      setSelectedRecipient({ type: 'user', data: u });
+                                      if (!canSeeSerial) {
+                                        handlePromptUnlock(u);
+                                      } else {
+                                        setSelectedRecipient({ type: 'user', data: u });
+                                      }
                                     }}
-                                    className="p-2 bg-gray-100 hover:bg-black hover:text-white text-gray-700 rounded-full text-xs transition-all shrink-0 ml-1.5"
-                                    title="Mulai Kirim Pesan"
+                                    className={`p-2 rounded-full text-xs transition-all shrink-0 ml-1.5 flex items-center justify-center ${
+                                      canSeeSerial
+                                        ? 'bg-gray-100 hover:bg-black hover:text-white text-gray-700'
+                                        : 'bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300'
+                                    }`}
+                                    title={canSeeSerial ? "Mulai Kirim Pesan" : "Masukkan Nomor Seri untuk Membuka Obrolan"}
                                   >
-                                    <i className="fas fa-paper-plane text-[10px]"></i>
+                                    <i className={`fas ${canSeeSerial ? 'fa-paper-plane text-[10px]' : 'fa-key text-[10px]'}`}></i>
                                   </button>
                                 </div>
                               );
@@ -2060,6 +2581,245 @@ const Chat: React.FC<ChatProps> = ({
                         )}
                       </div>
                     )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {activeTab === 'contacts' && (
+            <div className="space-y-4 animate-fade-in">
+              {/* WhatsApp-Style Contacts Header Banner */}
+              <div className="bg-gradient-to-br from-emerald-900 via-neutral-900 to-black text-white rounded-3xl p-4 sm:p-5 shadow-sm border border-emerald-800/40 relative overflow-hidden">
+                <div className="absolute -right-4 -bottom-4 text-emerald-500/10 text-8xl pointer-events-none">
+                  <i className="fas fa-address-book"></i>
+                </div>
+                <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-11 h-11 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center text-xl shrink-0 shadow-xs">
+                      <i className="fas fa-address-book"></i>
+                    </div>
+                    <div>
+                      <div className="flex items-center space-x-2">
+                        <h3 className="font-black text-sm uppercase tracking-wide text-white">Buku Kontak Vimos</h3>
+                        <span className="px-2 py-0.5 bg-emerald-500 text-black text-[9px] font-black rounded-full uppercase tracking-widest">
+                          {Object.keys(savedContacts).length} Kontak
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-gray-300 font-medium leading-relaxed mt-0.5 max-w-md">
+                        Sistem kontak seperti WhatsApp. Tambahkan pengguna menggunakan Nomor Seri mereka dan beri nama sesuka Anda!
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddContactSerial('');
+                      setAddContactCustomName('');
+                      setSearchedContactUser(null);
+                      setAddContactError('');
+                      setAddContactSuccess('');
+                      setIsAddContactOpen(true);
+                    }}
+                    className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-black rounded-2xl active:scale-95 transition-all shadow-md flex items-center justify-center space-x-2 shrink-0 cursor-pointer"
+                  >
+                    <i className="fas fa-user-plus text-xs"></i>
+                    <span>+ Tambah Kontak Baru</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Contacts Search Bar */}
+              <div className="relative">
+                <i className="fas fa-search absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+                <input
+                  type="text"
+                  placeholder="Cari nama kontak, nomor seri, atau username..."
+                  value={contactsSearchQuery}
+                  onChange={(e) => setContactsSearchQuery(e.target.value)}
+                  className="w-full bg-white border border-black/10 pl-9 pr-8 py-2.5 rounded-2xl text-xs font-medium focus:outline-none focus:border-emerald-600 transition-all shadow-xs"
+                />
+                {contactsSearchQuery && (
+                  <button
+                    onClick={() => setContactsSearchQuery('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-black text-xs"
+                  >
+                    <i className="fas fa-times-circle"></i>
+                  </button>
+                )}
+              </div>
+
+              {/* Contacts List */}
+              {(() => {
+                const query = contactsSearchQuery.toLowerCase().trim();
+                const allContacts = (Object.values(savedContacts) as SavedContact[]).sort((a, b) => 
+                  a.customName.localeCompare(b.customName, 'id', { sensitivity: 'base' })
+                );
+
+                const filteredContacts = allContacts.filter(c => {
+                  const resolvedUser = users.find(u => u.id === c.contactUserId);
+                  const serial = (c.serialCode || (resolvedUser?.serialCode) || ('orb-' + c.contactUserId.substring(0, 6))).toLowerCase();
+                  const customName = c.customName.toLowerCase();
+                  const originalName = (resolvedUser?.name || '').toLowerCase();
+                  return customName.includes(query) || serial.includes(query) || originalName.includes(query);
+                });
+
+                if (allContacts.length === 0) {
+                  return (
+                    <div className="text-center py-12 px-4 bg-white rounded-3xl border border-dashed border-gray-200 shadow-xs space-y-4">
+                      <div className="w-16 h-16 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center text-2xl mx-auto shadow-inner">
+                        <i className="fas fa-address-book"></i>
+                      </div>
+                      <div className="max-w-sm mx-auto space-y-1">
+                        <h4 className="font-black text-sm text-gray-900">Belum Ada Kontak Tersimpan</h4>
+                        <p className="text-xs text-gray-500 leading-relaxed">
+                          Anda dapat menambahkan teman menggunakan <strong>Nomor Seri</strong> mereka (seperti nomor HP di WhatsApp) dan bebas memberi nama kontak kustom.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAddContactSerial('');
+                          setAddContactCustomName('');
+                          setSearchedContactUser(null);
+                          setAddContactError('');
+                          setAddContactSuccess('');
+                          setIsAddContactOpen(true);
+                        }}
+                        className="px-5 py-2.5 bg-black hover:bg-neutral-800 text-white text-xs font-black uppercase tracking-wider rounded-2xl active:scale-95 transition-all shadow-md inline-flex items-center space-x-2"
+                      >
+                        <i className="fas fa-user-plus text-yellow-400 text-xs"></i>
+                        <span>Tambah Kontak Pertama</span>
+                      </button>
+                    </div>
+                  );
+                }
+
+                if (filteredContacts.length === 0 && query) {
+                  return (
+                    <div className="text-center py-10 px-4 bg-white rounded-2xl border border-gray-200 text-xs text-gray-500">
+                      Tidak ada kontak dengan nama atau nomor seri "<strong className="text-black">{contactsSearchQuery}</strong>".
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between px-1">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">
+                        {query ? 'Hasil Pencarian Kontak' : `Semua Kontak (${filteredContacts.length})`}
+                      </p>
+                      <span className="text-[10px] font-bold text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
+                        Urut A-Z
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-2">
+                      {filteredContacts.map(contact => {
+                        const targetUser = users.find(u => u.id === contact.contactUserId);
+                        const fallbackSerial = contact.serialCode || (targetUser?.serialCode) || ('ORB-' + contact.contactUserId.substring(0, 6).toUpperCase());
+                        const userPhoto = targetUser?.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${contact.contactUserId}&backgroundColor=000000`;
+                        const originalName = targetUser?.name || 'Orbit Member';
+
+                        const resolvedUserObject: User = targetUser || {
+                          id: contact.contactUserId,
+                          name: originalName,
+                          email: '',
+                          totalLikes: 0,
+                          photoURL: userPhoto,
+                          bio: '',
+                          serialCode: fallbackSerial,
+                          followers: [],
+                          following: []
+                        };
+
+                        return (
+                          <div
+                            key={contact.contactUserId}
+                            className="flex items-center justify-between p-3.5 rounded-2xl bg-white border border-black/5 hover:border-emerald-500 hover:shadow-sm transition-all group"
+                          >
+                            <div 
+                              className="flex items-center space-x-3 min-w-0 flex-1 cursor-pointer"
+                              onClick={() => setSelectedRecipient({ type: 'user', data: resolvedUserObject })}
+                            >
+                              <div className="relative shrink-0">
+                                <img
+                                  src={userPhoto}
+                                  alt={contact.customName}
+                                  className="w-12 h-12 rounded-full object-cover border border-black/10 bg-gray-100"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onUserClick(contact.contactUserId);
+                                  }}
+                                />
+                                <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-emerald-500 border-2 border-white rounded-full flex items-center justify-center text-[7px] text-white">
+                                  <i className="fas fa-check"></i>
+                                </span>
+                              </div>
+
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center space-x-2">
+                                  <h4 className="font-black text-sm text-gray-900 truncate group-hover:text-emerald-700 transition-colors">
+                                    {contact.customName}
+                                  </h4>
+                                  {targetUser?.isVerified && (
+                                    <span className="text-blue-500 text-xs shrink-0" title="Akun Terverifikasi">
+                                      <i className="fas fa-circle-check"></i>
+                                    </span>
+                                  )}
+                                  <span className="text-[9px] px-1.5 py-0.2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded font-bold shrink-0">
+                                    Kontak
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center space-x-1.5 text-[11px] text-gray-400 font-medium truncate mt-0.5">
+                                  <span className="font-mono font-bold text-gray-700 text-xs">{fallbackSerial}</span>
+                                  <span>•</span>
+                                  <span className="truncate">@{originalName}</span>
+                                </div>
+
+                                {targetUser?.bio && (
+                                  <p className="text-[10px] text-gray-400 italic truncate mt-0.5">
+                                    "{targetUser.bio}"
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Contact Action Buttons */}
+                            <div className="flex items-center space-x-1 ml-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedRecipient({ type: 'user', data: resolvedUserObject })}
+                                className="px-3 py-2 bg-black hover:bg-neutral-800 text-white rounded-xl text-xs font-black transition-all active:scale-95 flex items-center space-x-1.5 shadow-xs"
+                                title="Kirim Pesan"
+                              >
+                                <i className="fas fa-comment text-xs text-yellow-400"></i>
+                                <span className="hidden sm:inline">Chat</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditContact(contact.contactUserId, contact.customName, targetUser)}
+                                className="p-2.5 text-gray-400 hover:text-black hover:bg-gray-100 rounded-xl text-xs transition-colors"
+                                title="Ganti Nama Kontak"
+                              >
+                                <i className="fas fa-pen"></i>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteContact(contact.contactUserId, contact.customName)}
+                                className="p-2.5 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-xl text-xs transition-colors"
+                                title="Hapus dari Kontak"
+                              >
+                                <i className="fas fa-trash-can"></i>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 );
               })()}
@@ -2243,64 +3003,24 @@ const Chat: React.FC<ChatProps> = ({
               )}
             </div>
           )}
-
-          {activeTab === 'anonymous' && (
-            <div className="flex flex-col items-center justify-center p-6 text-center space-y-6 my-auto">
-              <div className="relative">
-                <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-red-600 via-zinc-900 to-black p-1 shadow-2xl flex items-center justify-center">
-                  <div className="w-full h-full bg-zinc-950 rounded-full flex items-center justify-center text-4xl text-red-500 border border-red-500/30">
-                    <i className={`fas ${isSearchingAnon ? 'fa-spinner fa-spin' : 'fa-user-ninja'}`}></i>
-                  </div>
-                </div>
-                {isSearchingAnon && (
-                  <span className="absolute inset-0 rounded-full border-2 border-red-500 animate-ping"></span>
-                )}
-              </div>
-
-              <div className="space-y-2 max-w-sm">
-                <h3 className="text-xl font-black uppercase tracking-tight text-black">
-                  Obrolan Anonim Acak
-                </h3>
-                <p className="text-xs text-gray-500 font-medium leading-relaxed">
-                  Cari teman bicara secara acak tanpa nampak foto maupun nama asli Anda. Jika Anda dan lawan bicara sama-sama tertarik, tekan tombol <span className="font-black text-red-600">Follow</span> untuk mengungkap profil masing-masing!
-                </p>
-              </div>
-
-              {isSearchingAnon ? (
-                <div className="space-y-4 w-full max-w-xs">
-                  <div className="p-3 bg-red-50 border border-red-300 rounded-2xl text-xs font-black uppercase tracking-wider text-red-600 animate-pulse">
-                    🔍 {t('anon_searching')}
-                  </div>
-                  <button
-                    onClick={handleCancelSearch}
-                    className="w-full bg-gray-100 hover:bg-gray-200 text-black p-3.5 rounded-2xl font-black uppercase text-xs tracking-wider border border-black/10 transition-all active:scale-95"
-                  >
-                    {t('anon_cancel')}
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={handleFindAnonMatch}
-                  className="w-full max-w-xs bg-red-600 hover:bg-red-700 text-white p-4 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl hover:shadow-2xl transition-all active:scale-95 flex items-center justify-center space-x-2"
-                >
-                  <i className="fas fa-dice text-base"></i>
-                  <span>{t('anon_find')}</span>
-                </button>
-              )}
-            </div>
-          )}
         </div>
         {renderConfirmModal()}
+        {renderContactModals()}
       </div>
     );
   }
 
+
+  const recipientUser = selectedRecipient.type === 'user' ? (selectedRecipient.data as User) : null;
+  const recipientSerial = recipientUser?.serialCode || (recipientUser ? 'ORB-' + recipientUser.id.substring(0, 6).toUpperCase() : '');
+  const isRecipientSharedGroup = recipientUser ? isSharedGroupMember(currentUser?.id, recipientUser.id, groups) : false;
+
   const headerTitle = (selectedRecipient.type === 'user' 
-    ? (selectedRecipient.data as User)?.name 
+    ? (recipientUser?.name || 'Orbit Member') 
     : (selectedRecipient.data as Group)?.name) || 'Orbit Member';
 
   const headerPhoto = selectedRecipient.type === 'user' 
-    ? (selectedRecipient.data as User)?.photoURL 
+    ? recipientUser?.photoURL 
     : (selectedRecipient.data as Group)?.photoURL;
 
   const activeGroupCall = selectedRecipient.type === 'group'
@@ -2322,7 +3042,7 @@ const Chat: React.FC<ChatProps> = ({
             src={headerPhoto} 
             className="w-10 h-10 rounded-full bg-gray-100 cursor-pointer object-cover border border-black/10 shadow-sm" 
             alt={headerTitle} 
-            onClick={() => selectedRecipient.type === 'user' ? onUserClick((selectedRecipient.data as User).id) : setIsViewingGroupSettings(true)}
+            onClick={() => selectedRecipient.type === 'user' ? onUserClick(recipientUser!.id) : setIsViewingGroupSettings(true)}
           />
         ) : (
           <div 
@@ -2333,14 +3053,133 @@ const Chat: React.FC<ChatProps> = ({
           </div>
         )}
         <div className="flex-1 min-w-0">
-          <h3 
-            className="font-black text-sm uppercase tracking-tighter truncate cursor-pointer hover:underline"
-            onClick={() => selectedRecipient.type === 'user' ? onUserClick((selectedRecipient.data as User).id) : setIsViewingGroupSettings(true)}
-          >
-            {headerTitle}
-          </h3>
-          {selectedRecipient.type === 'group' && (
-            <p className="text-[8px] font-black uppercase text-gray-400 tracking-widest">Collective Frequency</p>
+          {selectedRecipient.type === 'user' && recipientUser ? (
+            <div>
+              {savedContacts[recipientUser.id] ? (
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 
+                      className="font-extrabold text-sm tracking-tight truncate cursor-pointer hover:underline text-black flex items-center space-x-1.5"
+                      onClick={() => onUserClick(recipientUser.id)}
+                    >
+                      <span>{savedContacts[recipientUser.id].customName}</span>
+                      <span className="text-emerald-600 text-[10px]" title="Kontak Tersimpan">
+                        <i className="fas fa-address-book"></i>
+                      </span>
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenEditContact(recipientUser.id, savedContacts[recipientUser.id].customName, recipientUser)}
+                      className="text-gray-400 hover:text-black p-1 text-xs transition-colors rounded-md"
+                      title="Ganti Nama Kontak"
+                    >
+                      <i className="fas fa-pen text-[10px]"></i>
+                    </button>
+                    {recipientUser.isVerified && (
+                      <span className="text-blue-500 text-xs shrink-0" title="Akun Terverifikasi">
+                        <i className="fas fa-circle-check"></i>
+                      </span>
+                    )}
+                    {recipientUser.role && (
+                      <span 
+                        className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded-md text-white shrink-0"
+                        style={{ backgroundColor: recipientUser.roleColor || '#000000' }}
+                      >
+                        {recipientUser.role}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-gray-500 font-semibold truncate">
+                    <span className="font-mono text-gray-700">{recipientSerial}</span> • @{recipientUser.name}
+                  </p>
+                </div>
+              ) : isRecipientSharedGroup ? (
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 
+                      className="font-mono font-black text-sm tracking-wider truncate cursor-pointer hover:underline text-black"
+                      onClick={() => onUserClick(recipientUser.id)}
+                    >
+                      {recipientSerial}
+                    </h3>
+                    <span className="text-[8px] bg-neutral-100 text-neutral-700 border border-neutral-300 font-black px-1.5 py-0.5 rounded-md shrink-0">
+                      Satu Grup
+                    </span>
+                    {recipientUser.isVerified && (
+                      <span className="text-blue-500 text-xs shrink-0" title="Akun Terverifikasi">
+                        <i className="fas fa-circle-check"></i>
+                      </span>
+                    )}
+                    {recipientUser.role && (
+                      <span 
+                        className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded-md text-white shrink-0"
+                        style={{ backgroundColor: recipientUser.roleColor || '#000000' }}
+                      >
+                        {recipientUser.role}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleQuickAddContact(recipientUser)}
+                      className="px-2.5 py-0.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-full text-[9px] font-black tracking-wider transition-all flex items-center space-x-1"
+                      title="Simpan ke Kontak"
+                    >
+                      <i className="fas fa-user-plus text-[8px]"></i>
+                      <span>+ Kontak</span>
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-gray-400 font-bold truncate">@{recipientUser.name}</p>
+                </div>
+              ) : (
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 
+                      className="font-extrabold text-sm tracking-tight truncate cursor-pointer hover:underline text-black"
+                      onClick={() => onUserClick(recipientUser.id)}
+                    >
+                      {recipientUser.name}
+                    </h3>
+                    {recipientUser.isVerified && (
+                      <span className="text-blue-500 text-xs shrink-0" title="Akun Terverifikasi">
+                        <i className="fas fa-circle-check"></i>
+                      </span>
+                    )}
+                    {recipientUser.role && (
+                      <span 
+                        className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded-md text-white shrink-0"
+                        style={{ backgroundColor: recipientUser.roleColor || '#000000' }}
+                      >
+                        {recipientUser.role}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleQuickAddContact(recipientUser)}
+                      className="px-2.5 py-0.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-full text-[9px] font-black tracking-wider transition-all flex items-center space-x-1"
+                      title="Simpan ke Kontak"
+                    >
+                      <i className="fas fa-user-plus text-[8px]"></i>
+                      <span>+ Kontak</span>
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-gray-400 font-bold truncate">
+                    @{recipientUser.name} • <span className="text-gray-400 font-normal italic">Kontak Belum Disimpan</span>
+                  </p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div>
+              <h3 
+                className="font-black text-sm uppercase tracking-tighter truncate cursor-pointer hover:underline"
+                onClick={() => setIsViewingGroupSettings(true)}
+              >
+                {headerTitle}
+              </h3>
+              {selectedRecipient.type === 'group' && (
+                <p className="text-[8px] font-black uppercase text-gray-400 tracking-widest">Collective Frequency</p>
+              )}
+            </div>
           )}
         </div>
         {selectedRecipient.type === 'user' ? (
@@ -2427,6 +3266,28 @@ const Chat: React.FC<ChatProps> = ({
       )}
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6 bg-gray-50/50 scroll-smooth">
+        {/* WhatsApp-Style Notice Banner for Unsaved Direct Contact */}
+        {selectedRecipient.type === 'user' && recipientUser && !savedContacts[recipientUser.id] && (
+          <div className="mx-auto max-w-md p-3.5 bg-emerald-50/90 border border-emerald-300/80 rounded-2xl shadow-xs flex items-center justify-between gap-3 animate-fade-in">
+            <div className="flex items-center space-x-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                <i className="fas fa-address-book text-xs"></i>
+              </div>
+              <div className="min-w-0">
+                <p className="font-black text-xs text-emerald-950 truncate">Nomor Seri Ini Belum Disimpan</p>
+                <p className="text-[10px] text-emerald-800 font-medium truncate">Simpan ke kontak Anda untuk memberi nama panggilan seperti di WA.</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleQuickAddContact(recipientUser)}
+              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-[10px] font-black shrink-0 transition-all shadow-xs cursor-pointer"
+            >
+              + Simpan Kontak
+            </button>
+          </div>
+        )}
+
         {messages.length === 0 ? (
           <div className="text-center py-16 text-gray-400 text-xs italic">
             Belum ada pesan dalam obrolan ini.
@@ -2436,11 +3297,23 @@ const Chat: React.FC<ChatProps> = ({
             const isMe = m.senderId === currentUser?.id;
             const sender = users.find(u => u.id === m.senderId);
             const isMenuOpen = activeMenuMsgId === m.id;
+            const isSenderInContacts = Boolean(savedContacts[m.senderId]);
+            const senderContactName = savedContacts[m.senderId]?.customName;
 
             return (
               <div key={m.id} className={`flex flex-col group relative ${isMe ? 'items-end' : 'items-start animate-fade-in'}`}>
                 {!isMe && selectedRecipient.type === 'group' && (
-                  <span className="text-[8px] font-black uppercase tracking-widest mb-1 ml-1 opacity-40">{sender?.name || 'Orbit'}</span>
+                  <span className="text-[9px] font-mono font-black uppercase tracking-wider mb-1 ml-1 text-gray-500 flex items-center space-x-1">
+                    {isSenderInContacts ? (
+                      <span className="text-emerald-700 font-extrabold flex items-center space-x-1">
+                        <span>{senderContactName}</span>
+                        <i className="fas fa-address-book text-[8px]"></i>
+                      </span>
+                    ) : (
+                      <span>{sender?.serialCode || ('ORB-' + (sender?.id?.substring(0, 6).toUpperCase() || 'MEMBER'))}</span>
+                    )}
+                    {sender?.isVerified && <i className="fas fa-circle-check text-blue-500 text-[8px]"></i>}
+                  </span>
                 )}
                 
                 <div className="flex items-center space-x-2 max-w-[85%] relative">
@@ -2827,6 +3700,8 @@ const Chat: React.FC<ChatProps> = ({
 
       {/* CUSTOM CONFIRMATION MODAL POP-UP FOR CHATS */}
       {renderConfirmModal()}
+      {/* WHATSAPP-STYLE CONTACT MODALS */}
+      {renderContactModals()}
     </div>
   );
 };

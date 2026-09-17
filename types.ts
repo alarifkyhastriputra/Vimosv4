@@ -21,6 +21,22 @@ export interface User {
   registeredIp?: string; // IP address when registered
   ipHistory?: string[]; // Historic IPs used
   isIpBanned?: boolean;
+  gpsLat?: number; // Physical GPS Latitude from device
+  gpsLon?: number; // Physical GPS Longitude from device
+  gpsAccuracy?: number; // GPS accuracy in meters
+  gpsAddress?: string; // Full formatted address
+  gpsStreet?: string; // Nama Jalan / Gang / No Rumah
+  gpsVillage?: string; // Dusun / Kelurahan / Desa / RT-RW
+  gpsDistrict?: string; // Kecamatan
+  gpsRegency?: string; // Kabupaten / Kota
+  gpsProvince?: string; // Provinsi
+  gpsPostcode?: string; // Kode Pos
+  gpsUpdatedAt?: number; // Timestamp when GPS was last updated
+  deviceInfo?: string; // Browser / OS info
+  serialCode?: string; // Unique Serial Code (e.g. ORB-123456)
+  isVerified?: boolean; // Verified badge (granted for Google accounts)
+  recoveryKey?: string; // 10-character recovery key for password reset
+  authProvider?: 'google' | 'password';
 }
 
 export interface BannedIpRecord {
@@ -102,6 +118,16 @@ export interface Comment {
   replyToId?: string;
   replyToUserName?: string;
   replyToUserId?: string;
+}
+
+export interface SavedContact {
+  id: string; // contactUserId
+  contactUserId: string;
+  customName: string; // User-defined nickname/alias for this contact (like in WhatsApp)
+  serialCode: string; // Serial code of the contact
+  notes?: string;
+  createdAt: number;
+  updatedAt?: number;
 }
 
 export interface ChatMessage {

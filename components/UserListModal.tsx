@@ -50,10 +50,13 @@ export default function UserListModal({
                       onClick={() => onUserClick(u.id)}
                     />
                     <div className="flex-1 min-w-0 cursor-pointer" onClick={() => onUserClick(u.id)}>
-                      <p className="font-black text-sm uppercase tracking-tighter truncate">{u.name}</p>
-                      <p className="text-[9px] text-gray-400 truncate uppercase font-bold tracking-widest">
-                        {(u.followers || []).length} Followers
-                      </p>
+                      <div className="flex items-center space-x-1.5">
+                        <p className="font-bold text-xs uppercase tracking-tight truncate text-black">
+                          {u.name}
+                        </p>
+                        {u.isVerified && <i className="fas fa-circle-check text-blue-500 text-[10px]"></i>}
+                      </div>
+                      <p className="text-[10px] text-gray-500 truncate">@{u.name}</p>
                     </div>
                     {!isMe && (
                       <button 

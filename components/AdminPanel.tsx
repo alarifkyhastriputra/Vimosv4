@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { User, Announcement, BannedIpRecord } from '../types';
 import { db } from '../firebase';
 import { ref, onValue, set, remove, update } from 'firebase/database';
-import { AI_AVATAR_PRESETS } from './HengkurAIChat';
 import { sanitizeIpKey } from '../utils/ipHelper';
+import IpLocationModal from './IpLocationModal';
 
 interface AdminPanelProps {
   users: User[];
@@ -24,7 +24,7 @@ const PRESET_COLORS = [
 const AdminPanel: React.FC<AdminPanelProps> = ({ 
   users, announcements, onAddAnnouncement, onUpdateAnnouncement, onDeleteAnnouncement, onSetRole, onBanUser, onToggleAdmin, onUserClick 
 }) => {
-  const [activeTab, setActiveTab] = useState<'users' | 'broadcast' | 'aibot' | 'ipshield'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'broadcast' | 'ipshield'>('users');
   const [adminSearch, setAdminSearch] = useState('');
   const [editingRoleUser, setEditingRoleUser] = useState<User | null>(null);
   const [newRoleValue, setNewRoleValue] = useState('');
@@ -41,20 +41,28 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
   const [copiedIp, setCopiedIp] = useState<string | null>(null);
   const [ipActionSuccess, setIpActionSuccess] = useState<string | null>(null);
 
-  // AI Bot Admin Management
-  const [botName, setBotName] = useState('vimos.ai');
-  const [botAvatar, setBotAvatar] = useState('');
-  const [botBio, setBotBio] = useState('Asisten Cerdas Resmi Vimos • Online 24/7');
+  // IP Geolocation & Maps Modal Inspection State
+  const [inspectingIpData, setInspectingIpData] = useState<{
+    ip: string;
+    userName?: string;
+    userEmail?: string;
+    userPhoto?: string;
+    isBanned?: boolean;
+    gpsLat?: number;
+    gpsLon?: number;
+    gpsAccuracy?: number;
+    gpsAddress?: string;
+    gpsStreet?: string;
+    gpsVillage?: string;
+    gpsDistrict?: string;
+    gpsRegency?: string;
+    gpsProvince?: string;
+    gpsPostcode?: string;
+    gpsUpdatedAt?: number; deviceInfo?: any;
+  } | null>(null);
 
-  const [editingBotNameInput, setEditingBotNameInput] = useState('vimos.ai');
-  const [editingBotAvatarInput, setEditingBotAvatarInput] = useState('');
-  const [editingBotBioInput, setEditingBotBioInput] = useState('Asisten Cerdas Resmi Vimos • Online 24/7');
-
-  const [botSaveSuccess, setBotSaveSuccess] = useState(false);
-  const [isSavingBot, setIsSavingBot] = useState(false);
-  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Quick IP Geolocation Search input in IP Shield
+  const [quickLookupIp, setQuickLookupIp] = useState('');
 
   useEffect(() => {
     // Listen to banned IPs in real time
@@ -78,32 +86,8 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
       }
     });
 
-    const configRef = ref(db, 'appConfig');
-    const unsubConfig = onValue(configRef, (snap) => {
-      if (snap.exists()) {
-        const val = snap.val();
-        if (val) {
-          const loadedName = typeof val.aiBotName === 'string' && val.aiBotName.trim() ? val.aiBotName.trim() : 'vimos.ai';
-          const loadedAvatar = typeof val.aiBotAvatar === 'string' ? val.aiBotAvatar.trim() : '';
-          const loadedBio = typeof val.aiBotBio === 'string' && val.aiBotBio.trim() ? val.aiBotBio.trim() : 'Asisten Cerdas Resmi Vimos • Online 24/7';
-
-          setBotName(loadedName);
-          setBotAvatar(loadedAvatar);
-          setBotBio(loadedBio);
-
-          setEditingBotNameInput(loadedName);
-          setEditingBotAvatarInput(loadedAvatar);
-          setEditingBotBioInput(loadedBio);
-          return;
-        }
-      }
-      setBotName('vimos.ai');
-      setBotAvatar('');
-      setBotBio('Asisten Cerdas Resmi Vimos • Online 24/7');
-    });
     return () => {
       unsubBanned();
-      unsubConfig();
     };
   }, []);
 
@@ -191,81 +175,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!file.type.startsWith('image/')) {
-      alert('Mohon pilih file gambar yang valid (JPG, PNG, WebP).');
-      return;
-    }
-
-    setIsUploadingAvatar(true);
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const MAX_DIM = 300;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > MAX_DIM) {
-            height = Math.round((height * MAX_DIM) / width);
-            width = MAX_DIM;
-          }
-        } else {
-          if (height > MAX_DIM) {
-            width = Math.round((width * MAX_DIM) / height);
-            height = MAX_DIM;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
-          setEditingBotAvatarInput(compressedDataUrl);
-        }
-        setIsUploadingAvatar(false);
-      };
-      img.onerror = () => {
-        setIsUploadingAvatar(false);
-        alert('Gagal memproses gambar.');
-      };
-      img.src = event.target?.result as string;
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleSaveBotProfile = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmedName = editingBotNameInput.trim() || 'vimos.ai';
-    const trimmedAvatar = editingBotAvatarInput.trim();
-    const trimmedBio = editingBotBioInput.trim() || 'Asisten Cerdas Resmi Vimos • Online 24/7';
-
-    setIsSavingBot(true);
-    try {
-      await set(ref(db, 'appConfig/aiBotName'), trimmedName);
-      await set(ref(db, 'appConfig/aiBotAvatar'), trimmedAvatar);
-      await set(ref(db, 'appConfig/aiBotBio'), trimmedBio);
-
-      setBotName(trimmedName);
-      setBotAvatar(trimmedAvatar);
-      setBotBio(trimmedBio);
-      setBotSaveSuccess(true);
-      setTimeout(() => setBotSaveSuccess(false), 3000);
-    } catch (err) {
-      console.error('Error saving AI bot profile:', err);
-      alert('Gagal menyimpan profil bot AI. Silakan coba lagi.');
-    } finally {
-      setIsSavingBot(false);
-    }
-  };
-
   const filteredUsers = users.filter(u => {
     const safeSearch = (adminSearch || '').toLowerCase();
     return (u.name || '').toLowerCase().includes(safeSearch) || (u.email || '').toLowerCase().includes(safeSearch);
@@ -332,13 +241,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
               </span>
             )}
           </button>
-          <button 
-            onClick={() => setActiveTab('aibot')}
-            className={`pb-2 text-[10px] font-black uppercase tracking-[0.2em] transition-all border-b-2 flex items-center space-x-1.5 whitespace-nowrap ${activeTab === 'aibot' ? 'border-emerald-500 text-emerald-600' : 'border-transparent text-gray-300'}`}
-          >
-            <i className="fas fa-robot text-xs"></i>
-            <span>AI Bot Profile ({botName})</span>
-          </button>
         </div>
       </div>
 
@@ -389,14 +291,40 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                           </div>
                           <p className="text-[9px] font-bold text-gray-400 truncate uppercase tracking-widest">{user.email}</p>
                           
-                          {/* IP Address Details with badge & copy button */}
-                          <div className="flex items-center space-x-2 mt-1.5">
-                            <div className={`inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-lg border text-[10px] font-mono font-bold ${
-                              isThisIpBanned 
-                                ? 'bg-red-100 border-red-300 text-red-700' 
-                                : 'bg-neutral-100 border-neutral-200 text-neutral-700'
-                            }`}>
-                              <i className={`fas ${isThisIpBanned ? 'fa-ban text-red-500' : 'fa-network-wired text-neutral-400'} text-[9px]`}></i>
+                          {/* IP Address & Granular Geolocation Tags */}
+                          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                            <div 
+                              onClick={() => {
+                                if (userIp || user.gpsLat) {
+                                  setInspectingIpData({
+                                    ip: userIp || 'GPS Direct',
+                                    userName: user.name,
+                                    userEmail: user.email,
+                                    userPhoto: user.photoURL,
+                                    isBanned: isThisIpBanned,
+                                    gpsLat: user.gpsLat,
+                                    gpsLon: user.gpsLon,
+                                    gpsAccuracy: user.gpsAccuracy,
+                                    gpsAddress: user.gpsAddress,
+                                    gpsStreet: user.gpsStreet,
+                                    gpsVillage: user.gpsVillage,
+                                    gpsDistrict: user.gpsDistrict,
+                                    gpsRegency: user.gpsRegency,
+                                    gpsProvince: user.gpsProvince,
+                                    gpsPostcode: user.gpsPostcode,
+                                    gpsUpdatedAt: user.gpsUpdatedAt,
+                                    deviceInfo: user.deviceInfo
+                                  });
+                                }
+                              }}
+                              className={`inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg border text-[10px] font-mono font-bold cursor-pointer transition-all ${
+                                isThisIpBanned 
+                                  ? 'bg-red-100 border-red-300 text-red-700 hover:bg-red-200' 
+                                  : 'bg-neutral-100 border-neutral-200 text-neutral-700 hover:bg-neutral-200 hover:border-black'
+                              }`}
+                              title="Klik untuk melihat rincian Kecamatan, Gang, Desa & Peta Google Maps"
+                            >
+                              <i className={`fas ${isThisIpBanned ? 'fa-ban text-red-500' : 'fa-map-pin text-emerald-600'} text-[9px]`}></i>
                               <span>IP: {userIp || 'Belum tercatat'}</span>
                               {userIp && (
                                 <button
@@ -412,6 +340,76 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                                 </button>
                               )}
                             </div>
+
+                            {/* Real GPS Physical Location Tag with Kecamatan & Gang */}
+                            {(user.gpsAddress || user.gpsDistrict || user.gpsStreet) && (
+                              <div 
+                                onClick={() => {
+                                  setInspectingIpData({
+                                    ip: userIp || 'GPS Direct',
+                                    userName: user.name,
+                                    userEmail: user.email,
+                                    userPhoto: user.photoURL,
+                                    isBanned: isThisIpBanned,
+                                    gpsLat: user.gpsLat,
+                                    gpsLon: user.gpsLon,
+                                    gpsAccuracy: user.gpsAccuracy,
+                                    gpsAddress: user.gpsAddress,
+                                    gpsStreet: user.gpsStreet,
+                                    gpsVillage: user.gpsVillage,
+                                    gpsDistrict: user.gpsDistrict,
+                                    gpsRegency: user.gpsRegency,
+                                    gpsProvince: user.gpsProvince,
+                                    gpsPostcode: user.gpsPostcode,
+                                    gpsUpdatedAt: user.gpsUpdatedAt,
+                                    deviceInfo: user.deviceInfo
+                                  });
+                                }}
+                                className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-emerald-100/90 border border-emerald-300 text-emerald-900 text-[9px] font-bold cursor-pointer hover:bg-emerald-200 transition-all max-w-[280px] truncate shadow-2xs"
+                                title={`Lokasi Fisik: ${user.gpsAddress || 'Terdeteksi'}`}
+                              >
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                <i className="fas fa-location-dot text-[8px] text-emerald-600"></i>
+                                <span className="truncate">
+                                  {user.gpsDistrict ? `Kec. ${user.gpsDistrict}` : ''}
+                                  {user.gpsDistrict && (user.gpsStreet || user.gpsVillage) ? ' • ' : ''}
+                                  {user.gpsStreet || user.gpsVillage || user.gpsRegency || user.gpsAddress?.split(',')[0] || 'GPS Terdeteksi'}
+                                </span>
+                              </div>
+                            )}
+                            
+                            {(userIp || user.gpsLat) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setInspectingIpData({
+                                    ip: userIp || 'GPS Direct',
+                                    userName: user.name,
+                                    userEmail: user.email,
+                                    userPhoto: user.photoURL,
+                                    isBanned: isThisIpBanned,
+                                    gpsLat: user.gpsLat,
+                                    gpsLon: user.gpsLon,
+                                    gpsAccuracy: user.gpsAccuracy,
+                                    gpsAddress: user.gpsAddress,
+                                    gpsStreet: user.gpsStreet,
+                                    gpsVillage: user.gpsVillage,
+                                    gpsDistrict: user.gpsDistrict,
+                                    gpsRegency: user.gpsRegency,
+                                    gpsProvince: user.gpsProvince,
+                                    gpsPostcode: user.gpsPostcode,
+                                    gpsUpdatedAt: user.gpsUpdatedAt,
+                                    deviceInfo: user.deviceInfo
+                                  });
+                                }}
+                                className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[9px] font-black uppercase tracking-wider transition-all shadow-xs"
+                                title="Lihat Kecamatan, Gang & Peta Akurat"
+                              >
+                                <i className="fas fa-map-location-dot text-[9px]"></i>
+                                <span>Lihat Peta & Wilayah</span>
+                              </button>
+                            )}
+
                             {isThisIpBanned && (
                               <span className="bg-red-600 text-white text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider">
                                 IP Terblokir
@@ -423,7 +421,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                       {user.isBanned && <span className="text-[8px] font-black text-red-600 border border-red-600 px-2 py-1 rounded-full uppercase tracking-tighter">Banished</span>}
                     </div>
 
-                    <div className="grid grid-cols-4 gap-2 pt-1">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
                       <button 
                         onClick={() => onToggleAdmin && onToggleAdmin(user.id, Boolean(user.isAdmin))} 
                         className={`py-2 px-1 rounded-xl text-[9px] font-black uppercase tracking-wider border-2 transition-all flex items-center justify-center space-x-1 ${
@@ -469,8 +467,8 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                   <i className="fas fa-shield-halved text-xl"></i>
                 </div>
                 <div>
-                  <h3 className="text-sm font-black uppercase tracking-wider">Perlindungan Anti-Spam & Blokir IP</h3>
-                  <p className="text-[10px] text-neutral-400 font-medium">Blokir alamat IP pelanggar agar tidak dapat mendaftar akun baru ataupun login.</p>
+                  <h3 className="text-sm font-black uppercase tracking-wider">Perlindungan Anti-Spam, Blokir IP & Pelacakan Maps</h3>
+                  <p className="text-[10px] text-neutral-400 font-medium">Lacak koordinat GPS, alamat presisi, dan peta Google Maps pengguna serta blokir IP pelanggar.</p>
                 </div>
               </div>
               <div className="text-right">
@@ -478,6 +476,48 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                 <span className="block text-[8px] font-black uppercase tracking-widest text-neutral-400">IP Diblokir</span>
               </div>
             </div>
+          </div>
+
+          {/* Quick IP Geolocation & Maps Inspector Tool */}
+          <div className="p-5 border-2 border-black rounded-3xl bg-emerald-50/50 shadow-sm space-y-3">
+            <div className="flex items-center space-x-2">
+              <div className="w-7 h-7 rounded-xl bg-emerald-600 text-white flex items-center justify-center text-xs">
+                <i className="fas fa-map-location-dot"></i>
+              </div>
+              <div>
+                <h4 className="text-xs font-black uppercase tracking-wider text-neutral-900">
+                  Pelacak Lokasi & Google Maps Akurat
+                </h4>
+                <p className="text-[10px] text-neutral-600 font-medium">
+                  Ketik alamat IP apa pun untuk melihat estimasi alamat kota/wilayah, ISP, dan peta Google Maps langsung.
+                </p>
+              </div>
+            </div>
+            <form 
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (quickLookupIp.trim()) {
+                  setInspectingIpData({ ip: quickLookupIp.trim() });
+                }
+              }}
+              className="flex items-center space-x-2"
+            >
+              <input
+                type="text"
+                value={quickLookupIp}
+                onChange={(e) => setQuickLookupIp(e.target.value)}
+                placeholder="Masukkan alamat IP (cth: 182.253.120.45)..."
+                className="flex-1 bg-white border-2 border-black rounded-xl px-4 py-2.5 text-xs font-mono font-bold focus:outline-none focus:ring-0"
+              />
+              <button
+                type="submit"
+                disabled={!quickLookupIp.trim()}
+                className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-black text-xs uppercase tracking-wider px-5 py-2.5 rounded-xl transition-all shadow-xs flex items-center space-x-1.5"
+              >
+                <i className="fas fa-search-location"></i>
+                <span>Cek Maps</span>
+              </button>
+            </form>
           </div>
 
           {/* Form Tambah Manual Blokir IP */}
@@ -557,9 +597,9 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                     (b.reason || '').toLowerCase().includes(s);
                 })
                 .map((b) => (
-                  <div key={b.sanitizedIp} className="p-4 bg-white border-2 border-red-200 rounded-2xl shadow-xs flex items-center justify-between space-x-4">
+                  <div key={b.sanitizedIp} className="p-4 bg-white border-2 border-red-200 rounded-2xl shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="space-y-1 flex-1 min-w-0">
-                      <div className="flex items-center space-x-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="font-mono font-black text-sm text-red-600 bg-red-50 px-2.5 py-0.5 rounded-lg border border-red-200">
                           {b.ip}
                         </span>
@@ -586,14 +626,32 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
                       </div>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => handleUnbanIp(b.sanitizedIp, b.ip)}
-                      className="px-4 py-2 bg-neutral-100 hover:bg-emerald-500 hover:text-white text-neutral-700 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border border-neutral-300 hover:border-emerald-600 shrink-0 flex items-center space-x-1"
-                    >
-                      <i className="fas fa-unlock text-[9px]"></i>
-                      <span>Buka Blokir</span>
-                    </button>
+                    <div className="flex items-center space-x-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setInspectingIpData({
+                            ip: b.ip,
+                            userName: b.associatedUserName,
+                            userEmail: b.associatedUserEmail,
+                            isBanned: true
+                          });
+                        }}
+                        className="px-3 py-2 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border border-emerald-300 flex items-center space-x-1.5"
+                      >
+                        <i className="fas fa-map-location-dot text-[9px]"></i>
+                        <span>Lihat Maps</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleUnbanIp(b.sanitizedIp, b.ip)}
+                        className="px-4 py-2 bg-neutral-100 hover:bg-emerald-500 hover:text-white text-neutral-700 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border border-neutral-300 hover:border-emerald-600 shrink-0 flex items-center space-x-1"
+                      >
+                        <i className="fas fa-unlock text-[9px]"></i>
+                        <span>Buka Blokir</span>
+                      </button>
+                    </div>
                   </div>
                 ))
             )}
@@ -654,236 +712,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
       )}
 
-      {activeTab === 'aibot' && (
-        <div className="space-y-6">
-          {/* Main AI Profile Customizer Card */}
-          <div className="p-6 border-2 border-black rounded-3xl bg-gradient-to-br from-emerald-50/60 via-white to-teal-50/40 shadow-sm space-y-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <div className="w-12 h-12 rounded-2xl bg-black text-white flex items-center justify-center shadow-md">
-                  <i className="fas fa-robot text-xl text-emerald-400"></i>
-                </div>
-                <div>
-                  <h3 className="text-lg font-black uppercase text-neutral-900">Profil & Konfigurasi Bot AI</h3>
-                  <p className="text-xs text-neutral-500 font-medium">Ubah foto profil, nama resmi, dan bio bot AI yang tampil untuk seluruh pengguna Vimos</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Live Visual Preview of AI Bot */}
-            <div className="p-4 bg-white border-2 border-black/10 rounded-2xl shadow-xs">
-              <p className="text-[10px] font-black uppercase tracking-wider text-neutral-400 mb-2">
-                👁️ Live Preview Tampilan Pengguna
-              </p>
-              <div className="flex items-center space-x-3 p-3 bg-neutral-50 border border-neutral-200 rounded-2xl">
-                <div className="relative shrink-0">
-                  {editingBotAvatarInput ? (
-                    <img
-                      src={editingBotAvatarInput}
-                      alt="AI Preview"
-                      className="w-12 h-12 rounded-2xl object-cover border-2 border-black shadow-sm"
-                    />
-                  ) : (
-                    <div className="w-12 h-12 rounded-2xl bg-black text-white flex items-center justify-center border-2 border-black shadow-sm">
-                      <i className="fas fa-robot text-xl text-emerald-400"></i>
-                    </div>
-                  )}
-                  <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-emerald-500 border-2 border-white rounded-full"></span>
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center space-x-1.5">
-                    <span className="font-black text-sm uppercase text-neutral-900 truncate">
-                      {editingBotNameInput || 'vimos.ai'}
-                    </span>
-                    <span className="bg-black text-white text-[8px] font-black px-1.5 py-0.5 rounded-md flex items-center space-x-1">
-                      <i className="fas fa-sparkles text-[7px] text-yellow-300"></i>
-                      <span>OFFICIAL</span>
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-neutral-500 font-bold truncate">
-                    {editingBotBioInput || 'Asisten Cerdas Resmi Vimos • Online 24/7'}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <form onSubmit={handleSaveBotProfile} className="space-y-5">
-              {/* Photo & Avatar Controls */}
-              <div className="p-4 bg-white border-2 border-black rounded-2xl space-y-4">
-                <div className="flex items-center justify-between">
-                  <label className="text-[11px] font-black uppercase tracking-wider text-neutral-800">
-                    1. Foto Profil / Avatar AI
-                  </label>
-                  {editingBotAvatarInput && (
-                    <button
-                      type="button"
-                      onClick={() => setEditingBotAvatarInput('')}
-                      className="text-[10px] font-bold text-red-600 hover:underline flex items-center space-x-1"
-                    >
-                      <i className="fas fa-rotate-left"></i>
-                      <span>Reset ke Ikon Default</span>
-                    </button>
-                  )}
-                </div>
-
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-                  <div className="relative shrink-0">
-                    {editingBotAvatarInput ? (
-                      <img
-                        src={editingBotAvatarInput}
-                        alt="Bot Avatar"
-                        className="w-20 h-20 rounded-3xl object-cover border-3 border-black shadow-md"
-                      />
-                    ) : (
-                      <div className="w-20 h-20 rounded-3xl bg-black text-white flex items-center justify-center border-3 border-black shadow-md">
-                        <i className="fas fa-robot text-3xl text-emerald-400"></i>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex-1 space-y-2 w-full">
-                    <input
-                      type="file"
-                      ref={fileInputRef}
-                      onChange={handleImageFileUpload}
-                      accept="image/*"
-                      className="hidden"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={isUploadingAvatar}
-                      className="w-full py-2.5 px-4 bg-black hover:bg-neutral-800 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center space-x-2 transition-all active:scale-98 shadow-sm"
-                    >
-                      <i className={`fas ${isUploadingAvatar ? 'fa-spinner fa-spin' : 'fa-arrow-up-from-bracket text-emerald-400'}`}></i>
-                      <span>{isUploadingAvatar ? 'Memproses Foto...' : 'Upload Foto dari Galeri / PC'}</span>
-                    </button>
-                    <p className="text-[10px] text-neutral-400 font-bold">
-                      Format: PNG, JPG, WebP. Gambar otomatis dioptimasi untuk kecepatan tinggi.
-                    </p>
-                  </div>
-                </div>
-
-                {/* Preset Avatar Gallery */}
-                <div className="pt-2 border-t border-neutral-100">
-                  <p className="text-[10px] font-black uppercase tracking-wider text-neutral-500 mb-2">
-                    Atau Pilih Dari Preset Avatar AI Keren:
-                  </p>
-                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5">
-                    {AI_AVATAR_PRESETS.map((preset, idx) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => setEditingBotAvatarInput(preset.url)}
-                        className={`relative rounded-2xl overflow-hidden aspect-square border-2 transition-all group hover:scale-105 ${
-                          editingBotAvatarInput === preset.url ? 'border-emerald-500 ring-2 ring-emerald-400 scale-105' : 'border-neutral-200'
-                        }`}
-                        title={preset.name}
-                      >
-                        <img src={preset.url} alt={preset.name} className="w-full h-full object-cover" />
-                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center text-[9px] text-white font-black uppercase transition-opacity">
-                          {preset.name}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Direct Image URL input */}
-                <div>
-                  <label className="text-[10px] font-black uppercase tracking-wider text-neutral-500 block mb-1">
-                    Atau Masukkan URL Gambar:
-                  </label>
-                  <input
-                    type="url"
-                    value={editingBotAvatarInput}
-                    onChange={(e) => setEditingBotAvatarInput(e.target.value)}
-                    placeholder="https://example.com/foto-ai.jpg"
-                    className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2 text-xs font-medium focus:outline-none focus:bg-white focus:border-black"
-                  />
-                </div>
-              </div>
-
-              {/* Bot Name Input & Quick Presets */}
-              <div className="p-4 bg-white border-2 border-black rounded-2xl space-y-3">
-                <label className="text-[11px] font-black uppercase tracking-wider text-neutral-800 block">
-                  2. Nama Bot AI
-                </label>
-                <input
-                  type="text"
-                  value={editingBotNameInput}
-                  onChange={(e) => setEditingBotNameInput(e.target.value)}
-                  placeholder="Contoh: vimos.ai"
-                  className="w-full bg-neutral-50 border-2 border-black rounded-xl px-4 py-2.5 text-sm font-bold focus:outline-none focus:bg-white"
-                  required
-                />
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {['vimos.ai', 'Vimos AI', 'Vimos Bot', 'Hengkur AI', 'Vimos Intelligence'].map((name) => (
-                    <button
-                      type="button"
-                      key={name}
-                      onClick={() => setEditingBotNameInput(name)}
-                      className="bg-neutral-100 hover:bg-black hover:text-white text-neutral-800 px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors"
-                    >
-                      {name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Bot Bio / Status Tagline */}
-              <div className="p-4 bg-white border-2 border-black rounded-2xl space-y-3">
-                <label className="text-[11px] font-black uppercase tracking-wider text-neutral-800 block">
-                  3. Bio / Tagline Status AI
-                </label>
-                <input
-                  type="text"
-                  value={editingBotBioInput}
-                  onChange={(e) => setEditingBotBioInput(e.target.value)}
-                  placeholder="Contoh: Asisten Cerdas Resmi Vimos • Online 24/7"
-                  className="w-full bg-neutral-50 border-2 border-black rounded-xl px-4 py-2.5 text-xs font-bold focus:outline-none focus:bg-white"
-                />
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {[
-                    'Asisten Cerdas Resmi Vimos • Online 24/7',
-                    'Kreator Konten & Ide Viral Vimos • 24/7',
-                    'AI Asisten Pintar & Sahabat Komunitas Vimos',
-                  ].map((bio) => (
-                    <button
-                      type="button"
-                      key={bio}
-                      onClick={() => setEditingBotBioInput(bio)}
-                      className="bg-neutral-100 hover:bg-black hover:text-white text-neutral-800 px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors truncate max-w-full"
-                    >
-                      {bio}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Submit Save Button */}
-              <div className="pt-2">
-                <button
-                  type="submit"
-                  disabled={isSavingBot || !editingBotNameInput.trim()}
-                  className="w-full py-3.5 bg-black hover:bg-neutral-800 text-white rounded-2xl text-xs font-black uppercase tracking-wider transition-all disabled:opacity-40 shadow-lg active:scale-98 flex items-center justify-center space-x-2"
-                >
-                  <i className={`fas ${isSavingBot ? 'fa-spinner fa-spin' : 'fa-floppy-disk text-emerald-400'}`}></i>
-                  <span>{isSavingBot ? 'Menyimpan Profil AI...' : 'Simpan Seluruh Perubahan Profil AI'}</span>
-                </button>
-              </div>
-
-              {botSaveSuccess && (
-                <div className="p-3 bg-emerald-100 border border-emerald-300 rounded-xl text-emerald-900 text-xs font-bold flex items-center space-x-2 animate-fade-in">
-                  <i className="fas fa-circle-check text-emerald-600"></i>
-                  <span>Profil AI berhasil diperbarui secara global dan tersinkronisasi untuk seluruh pengguna!</span>
-                </div>
-              )}
-            </form>
-          </div>
-        </div>
-      )}
-
       {editingRoleUser && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm animate-fade-in">
           <div className="bg-white border-4 border-black w-full max-w-sm rounded-3xl overflow-hidden shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] flex flex-col">
@@ -905,6 +733,59 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* IP Geolocation & Interactive Maps Modal */}
+      {inspectingIpData && (
+        <IpLocationModal
+          ip={inspectingIpData.ip}
+          userName={inspectingIpData.userName}
+          userEmail={inspectingIpData.userEmail}
+          userPhoto={inspectingIpData.userPhoto}
+          isBanned={inspectingIpData.isBanned}
+          gpsLat={inspectingIpData.gpsLat}
+          gpsLon={inspectingIpData.gpsLon}
+          gpsAccuracy={inspectingIpData.gpsAccuracy}
+          gpsAddress={inspectingIpData.gpsAddress}
+          gpsStreet={inspectingIpData.gpsStreet}
+          gpsVillage={inspectingIpData.gpsVillage}
+          gpsDistrict={inspectingIpData.gpsDistrict}
+          gpsRegency={inspectingIpData.gpsRegency}
+          gpsProvince={inspectingIpData.gpsProvince}
+          gpsPostcode={inspectingIpData.gpsPostcode}
+          gpsUpdatedAt={inspectingIpData.gpsUpdatedAt}
+          onClose={() => setInspectingIpData(null)}
+          onBanIp={async (targetIp) => {
+            const sanitized = sanitizeIpKey(targetIp);
+            const reason = window.prompt(`Masukkan alasan pemblokiran IP ${targetIp}:`, 'Pelanggaran spam/bot akun');
+            if (reason === null) return;
+            try {
+              await set(ref(db, `bannedIps/${sanitized}`), {
+                ip: targetIp,
+                sanitizedIp: sanitized,
+                bannedAt: Date.now(),
+                bannedBy: 'Admin Geolocation Inspector',
+                reason: reason || 'Diblokir oleh Administrator',
+                associatedUserName: inspectingIpData.userName,
+                associatedUserEmail: inspectingIpData.userEmail
+              });
+              setIpActionSuccess(`Alamat IP ${targetIp} berhasil diblokir!`);
+              setTimeout(() => setIpActionSuccess(null), 4000);
+            } catch (e) {
+              alert('Gagal memproses pemblokiran IP.');
+            }
+          }}
+          onUnbanIp={async (targetIp) => {
+            const sanitized = sanitizeIpKey(targetIp);
+            try {
+              await remove(ref(db, `bannedIps/${sanitized}`));
+              setIpActionSuccess(`Blokir alamat IP ${targetIp} berhasil dicabut.`);
+              setTimeout(() => setIpActionSuccess(null), 3000);
+            } catch (e) {
+              alert('Gagal membuka blokir IP.');
+            }
+          }}
+        />
       )}
     </div>
   );

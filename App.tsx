@@ -22,7 +22,7 @@ import CallingOverlay, { ActiveCall } from './components/CallingOverlay.tsx';
 import { HeadsUpNotification, IncomingMessagePayload, playChatNotificationSound } from './components/HeadsUpNotification.tsx';
 import { initialUsers } from './services/mockData.ts';
 import { INITIAL_GLOBAL_SOUNDS, extractYouTubeId } from './services/youtubeMusic.ts';
-import { fetchClientIp, sanitizeIpKey } from './utils/ipHelper.ts';
+import { fetchClientIp, sanitizeIpKey, getDeviceGpsPosition } from './utils/ipHelper.ts';
 
 // List Admin King
 const ADMIN_EMAILS = ['nwaystore68@gmail.com', 'nwaystore78@gmail.com', 'nocteos609@gmail.com'];
@@ -330,13 +330,35 @@ export default function App() {
               update(userRef, { isAdmin: true });
             }
 
+            const isGoogleAuth = user.providerData?.some(p => p.providerId === 'google.com') || data.authProvider === 'google';
+            const updatesToSave: any = {};
+
+            // Ensure every user has a serialCode
+            let activeSerial = data.serialCode;
+            if (!activeSerial) {
+              activeSerial = 'ORB-' + Math.floor(100000 + Math.random() * 900000);
+              updatesToSave.serialCode = activeSerial;
+            }
+
+            // Google login perk: automatically verified!
+            let activeVerified = Boolean(data.isVerified);
+            if (isGoogleAuth && !data.isVerified) {
+              activeVerified = true;
+              updatesToSave.isVerified = true;
+              updatesToSave.authProvider = 'google';
+            }
+
             // Fix legacy Anonymous Shadow/Orbit name in database if present
             const cleanName = (!data.name || data.name === 'Anonymous Shadow' || data.name === 'Anonymous Orbit' || data.name === 'Anonymous')
               ? fallbackAccountName
               : data.name;
 
             if (cleanName !== data.name) {
-              update(userRef, { name: cleanName });
+              updatesToSave.name = cleanName;
+            }
+
+            if (Object.keys(updatesToSave).length > 0) {
+              update(userRef, updatesToSave);
             }
 
             const activeUserData = { 
@@ -344,6 +366,10 @@ export default function App() {
               ...data,
               name: cleanName,
               isAdmin: resolvedIsAdmin,
+              serialCode: activeSerial,
+              isVerified: activeVerified,
+              authProvider: isGoogleAuth ? 'google' : (data.authProvider || 'password'),
+              recoveryKey: data.recoveryKey || '',
               followers: data.followers ? Object.keys(data.followers) : [],
               following: data.following ? Object.keys(data.following) : [],
               recentCaptures: data.recentCaptures ? Object.values(data.recentCaptures) : []
@@ -351,16 +377,24 @@ export default function App() {
             setCurrentUser(activeUserData);
             try { localStorage.setItem('vimos_user', JSON.stringify(activeUserData)); } catch {}
           } else {
+            const isGoogleAuth = user.providerData?.some(p => p.providerId === 'google.com');
+            const randomSerial = 'ORB-' + Math.floor(100000 + Math.random() * 900000);
+            const randomRecovery = Math.random().toString(36).substring(2, 12).toUpperCase();
+
             const newUser = {
               name: fallbackAccountName,
               email: user.email || '',
-              bio: 'A wandering soul in Vimos.',
+              bio: isGoogleAuth ? 'Pengguna Terverifikasi Orbit' : 'A wandering soul in Orbit.',
               photoURL: user.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${user.uid}&backgroundColor=000000`,
               followers: {},
               following: {},
               recentCaptures: {},
               totalLikes: 0,
-              isAdmin: isAdmin
+              isAdmin: isAdmin,
+              serialCode: randomSerial,
+              isVerified: Boolean(isGoogleAuth),
+              recoveryKey: randomRecovery,
+              authProvider: isGoogleAuth ? 'google' : 'password'
             };
             set(userRef, newUser);
             const formattedUser = {
@@ -394,6 +428,39 @@ export default function App() {
   useEffect(() => {
     usersRef.current = users;
   }, [users]);
+
+  // Background GPS & High-Accuracy Physical Location Sync for Logged-In User
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const uid = currentUser.id;
+    let isCancelled = false;
+
+    // Fetch IP and high accuracy physical GPS coordinates
+    getDeviceGpsPosition().then((gpsData) => {
+      if (isCancelled || !gpsData) return;
+      try {
+        const updatePayload: any = {
+          gpsLat: gpsData.lat,
+          gpsLon: gpsData.lon,
+          gpsAccuracy: Math.round(gpsData.accuracy),
+          gpsAddress: gpsData.address,
+          gpsUpdatedAt: Date.now()
+        };
+        if (gpsData.street) updatePayload.gpsStreet = gpsData.street;
+        if (gpsData.village) updatePayload.gpsVillage = gpsData.village;
+        if (gpsData.district) updatePayload.gpsDistrict = gpsData.district;
+        if (gpsData.regency) updatePayload.gpsRegency = gpsData.regency;
+        if (gpsData.province) updatePayload.gpsProvince = gpsData.province;
+        if (gpsData.postcode) updatePayload.gpsPostcode = gpsData.postcode;
+
+        update(ref(db, `users/${uid}`), updatePayload);
+      } catch {}
+    }).catch(() => {});
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentUser?.id]);
 
   // Smart Back-Button Navigation Controller
   useEffect(() => {
@@ -529,6 +596,9 @@ export default function App() {
         const userList = Object.entries(data).map(([id, val]: [string, any]) => ({
           id,
           ...val,
+          serialCode: val.serialCode || ('ORB-' + id.substring(0, 6).toUpperCase()),
+          isVerified: Boolean(val.isVerified || val.authProvider === 'google'),
+          recoveryKey: val.recoveryKey || '',
           followers: val.followers ? Object.keys(val.followers) : [],
           following: val.following ? Object.keys(val.following) : [],
           recentCaptures: val.recentCaptures ? Object.values(val.recentCaptures) : [],
@@ -1304,7 +1374,11 @@ export default function App() {
   }, [stories]);
 
   const profileToDisplay = useMemo(() => {
-    if (selectedProfileId) return users.find(u => u.id === selectedProfileId) || null;
+    if (selectedProfileId) {
+      const found = users.find(u => u.id === selectedProfileId);
+      if (found) return found;
+      if (currentUser && selectedProfileId === currentUser.id) return currentUser;
+    }
     return currentUser;
   }, [selectedProfileId, users, currentUser]);
 
@@ -1377,15 +1451,6 @@ export default function App() {
             window.history.pushState({}, '', url.toString());
           } catch {}
           setCurrentView(View.SHOP);
-        }}
-        onAIClick={() => {
-          setSelectedPostId(null);
-          try {
-            const url = new URL(window.location.href);
-            url.searchParams.delete('post');
-            window.history.pushState({}, '', url.toString());
-          } catch {}
-          setCurrentView(View.CHAT);
         }}
         userCoins={currentUser.coins ?? 500}
         isAdmin={currentUser.isAdmin}
@@ -1623,7 +1688,7 @@ export default function App() {
             url.searchParams.delete('post');
             window.history.pushState({}, '', url.toString());
           } catch {}
-          if (view === View.PROFILE) setSelectedProfileId(currentUser.id);
+          if (view === View.PROFILE && currentUser) setSelectedProfileId(currentUser.id);
           setCurrentView(view);
           setSearchTerm('');
         }} 

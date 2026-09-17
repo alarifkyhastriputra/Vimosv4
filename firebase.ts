@@ -1,6 +1,13 @@
 
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { initializeAuth, browserLocalPersistence, indexedDBLocalPersistence, browserSessionPersistence, getAuth } from 'firebase/auth';
+import { 
+  initializeAuth, 
+  browserLocalPersistence, 
+  indexedDBLocalPersistence, 
+  browserSessionPersistence, 
+  browserPopupRedirectResolver,
+  getAuth 
+} from 'firebase/auth';
 import { getDatabase } from 'firebase/database';
 
 const firebaseConfig = {
@@ -18,7 +25,8 @@ const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 let authInstance;
 try {
   authInstance = initializeAuth(app, {
-    persistence: [indexedDBLocalPersistence, browserLocalPersistence, browserSessionPersistence]
+    persistence: [indexedDBLocalPersistence, browserLocalPersistence, browserSessionPersistence],
+    popupRedirectResolver: browserPopupRedirectResolver
   });
 } catch {
   authInstance = getAuth(app);
